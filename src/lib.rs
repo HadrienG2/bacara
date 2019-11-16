@@ -143,6 +143,9 @@ mod tests {
     fn it_works() {
         assert_eq!(2 + 2, 4);
     }
+
+    // TODO: Tests tests test absolutely everything as this code is going to be
+    //       super-extremely tricky
 }
 
 // TODO: Benchmark at various block sizes and show a graph on README
