@@ -110,7 +110,7 @@ impl Allocator {
     // TODO: Basically mirror all questions from alloc_unbound
     // NOTE: Could actually be based on alloc_unbound and just wrap its
     //       Box-ish output into a lifetime-safety layer
-    pub fn alloc(&self, _size: usize) -> Option<&mut [u8]> {
+    pub fn alloc(&self, _size: usize) -> Option<&mut [MaybeUninit<u8>]> {
         unimplemented!()
     }
 
@@ -119,13 +119,13 @@ impl Allocator {
     //       outlives backing store of allocator)
     // TODO: Clarify safety contract of output pointer
     // TODO: Support overaligned allocations? Accept std::alloc::Layout?
-    pub fn alloc_unbound(&self, _size: usize) -> Option<NonNull<[u8]>> {
+    pub fn alloc_unbound(&self, _size: usize) -> Option<NonNull<[MaybeUninit<u8>]>> {
         unimplemented!()
     }
 
     // TODO: Should not be called by the user but by RAII thingie, see above
     // NOTE: Unlike system allocator, we don't need full layout, only size
-    unsafe fn dealloc(_ptr: NonNull<[u8]>) {
+    unsafe fn dealloc(_ptr: NonNull<[MaybeUninit<u8>]>) {
         unimplemented!()
     }
 }
