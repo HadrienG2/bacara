@@ -2,18 +2,20 @@
 //! your dynamic memory allocation needs in those real-time threads where the
 //! system memory allocator should not be used.
 //!
-//! The implementation is both thread-safe and real-time-friendly: after an
-//! RT-unsafe initialization stage, you can use the allocator to allocate and
+//! The implementation is both thread-safe and real-time-friendly: after its
+//! RT-unsafe initialization stage, you can use this allocator to allocate and
 //! liberate memory from multiple RT threads, and none of them will acquire a
 //! lock or call into any RT-unsafe operating system facility in the process.
 //!
 //! # Bitmap allocation primer
 //!
-//! A bitmap allocator is a general-purpose memory allocator, in the sense that
-//! it allows allocating variable-sized objects and deallocating them one by one
-//! in a different order. It works by dividing the buffer of memory that it is
+//! A bitmap allocator is a general-purpose memory allocator: it allows
+//! allocating variable-sized buffers from its backing store, and later on
+//! deallocating them individually and in any order.
+//!
+//! This allocation algorithm works by dividing the buffer of memory that it is
 //! managing (its **backing store**) into evenly sized **blocks**, and tracking
-//! which blocks are available and used using an array of bits, a **bitmap**.
+//! which blocks are in use using an array of bits, a **bitmap**.
 //!
 //! Allocation is done by scanning the bitmap for a suitably large hole
 //! (continuous sequence of zeroes), filling that hole with ones, and mapping 
@@ -22,7 +24,7 @@
 //! range of indices within the bitmap and resetting those bits to zero.
 //!
 //! The **block size** is the most important tuning parameter of a bitmap
-//! allocator, and should be selected wisely:
+//! allocator, and should be chosen wisely:
 //!
 //! - Because the allocation overhead and bitmap size are proportional to the
 //!   number of blocks managed by the allocator, the CPU and memory overhead of
@@ -32,11 +34,18 @@
 //!   sizes mean less efficient use of the backing store, as the allocator is
 //!   more likely to allocate more memory than the client needs on each request.
 //!
-//! You should tune your block size based on your full range of envisioned
+//! Furthermore, pratical implementations of bitmap allocation on modern
+//! non-bit-addressable hardware will most efficiently handle allocation
+//! requests around an implementation-defined multiple of the block size, which
+//! we will refer to as a **superblock**. Depending on your requirements, you
+//! may want to tune your allocator based on superblock size rather than block
+//! size, and our API will allow you to do both.
+//!
+//! You should tune your (super)block size based on the full range of envisioned
 //! allocation workloads, and even consider instantiating multiple allocators
-//! with different block sizes if your allocation workloads vary widely, because
+//! with different block sizes if your allocation patterns vary widely, because
 //! a block size that is a good compromise for a given allocation pattern may be
-//! a poor choice for another allocation pattern.
+//! a less than ideal choice for another allocation pattern.
 //!
 //! # Example
 //!
