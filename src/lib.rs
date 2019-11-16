@@ -14,8 +14,8 @@
 //! deallocating them individually and in any order.
 //!
 //! This allocation algorithm works by dividing the buffer of memory that it is
-//! managing (its **backing store**) into evenly sized **blocks**, and tracking
-//! which blocks are in use using an array of bits, a **bitmap**.
+//! managing (which we'll call **backing store**) into evenly sized **blocks**,
+//! and tracking which blocks are in use using an array of bits, a **bitmap**.
 //!
 //! Allocation is done by scanning the bitmap for a suitably large hole
 //! (continuous sequence of zeroes), filling that hole with ones, and mapping 
@@ -50,6 +50,82 @@
 //! # Example
 //!
 //! FIXME: Oh yes I do need those, but API must be done first ;)
+
+use std::{
+    mem::{self, MaybeUninit},
+    ptr::NonNull,
+    sync::atomic::AtomicUsize,
+};
+
+
+
+pub struct Allocator {
+    backing_store: NonNull<[MaybeUninit<u8>]>,
+
+    usage_bitmap: Box<[AtomicUsize]>,
+
+    // Provides a way to clearly tell the compiler that bs is a power of 2 so
+    // that it optimizes our integer divides and modulos. Use block_size()
+    // and friends in actual code.
+    block_size_shift: usize,
+}
+
+impl Allocator {
+    // These three ones must be inline as it's super-important that the compiler
+    // realizes that it can use a power-of-2 fast path for divisions and modulos
+
+    #[inline(always)]
+    fn block_size(&self) -> usize {
+        1 << self.block_size_shift
+    }
+
+    #[inline(always)]
+    const fn blocks_per_superblock() -> usize {
+        mem::size_of::<usize>() * 8
+    }
+
+    #[inline(always)]
+    fn superblock_size(&self) -> usize {
+        self.block_size() * Self::blocks_per_superblock()
+    }
+
+    // TODO: Design some nicer API that can work with either block size or
+    //       superblock size and does not have the "many usize params" smell,
+    //       probably some kind of AllocatorBuilder
+    //
+    // All parameters are in bytes, with the following constraints:
+    // - align is a global alignment that all allocations uphold, must be
+    //   nonzero and a power of 2 (std::alloc::Layout constraint)
+    // - block_size must be a multiple of alignment (so that all blocks, and
+    //   thus all allocations, are aligned) and a power of 2 (for fast divide)
+    // - capacity must not be zero (for system allocator) and will be rounded up
+    //   to next multiple of superblock size (to avoid complicating alg with
+    //   weird bitmap end), and that must not overflow or else we'll error out.
+    pub fn new(_align: usize, _block_size: usize, _capacity: usize) -> Self {
+        unimplemented!()
+    }
+
+    // TODO: Add some Box-ish abstraction that auto-deallocates, but do not make
+    //       it auto-deref as it's an unsafe operation (no check that pointer
+    //       outlives backing store of allocator)
+    // TODO: Clarify safety contract of output pointer
+    // TODO: Support overaligned allocations? Accept std::alloc::Layout?
+    pub fn alloc(&self, _size: usize) -> Option<NonNull<[u8]>> {
+        unimplemented!()
+    }
+
+    // TODO: Should not be called by the user but by RAII thingie, see above
+    unsafe fn dealloc(_ptr: NonNull<[u8]>) {
+        unimplemented!()
+    }
+}
+
+impl Drop for Allocator {
+    // TODO: Deallocate backing store
+    fn drop(&mut self) {
+        unimplemented!()
+    }
+}
 
 
 #[cfg(test)]
