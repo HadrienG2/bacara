@@ -110,7 +110,7 @@ impl Allocator {
     // TODO: Basically mirror all questions from alloc_unbound
     // NOTE: Could actually be based on alloc_unbound and just wrap its
     //       Box-ish output into a lifetime-safety layer
-    pub fn alloc(&self, _size: usize) -> Option<&mut [MaybeUninit<u8>]> {
+    pub fn alloc<'s>(&'s self, _size: usize) -> Option<&'s mut [MaybeUninit<u8>]> {
         unimplemented!()
     }
 
