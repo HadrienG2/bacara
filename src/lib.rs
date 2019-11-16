@@ -105,12 +105,21 @@ impl Allocator {
         unimplemented!()
     }
 
+    // TODO: Add some Box-ish abstraction that auto-deallocates and auto-derefs
+    //       as it's safe in such a lifetime-based API
+    // TODO: Basically mirror all questions from alloc_unbound
+    // NOTE: Could actually be based on alloc_unbound and just wrap its
+    //       Box-ish output into a lifetime-safety layer
+    pub fn alloc(&self, _size: usize) -> Option<&mut [u8]> {
+        unimplemented!()
+    }
+
     // TODO: Add some Box-ish abstraction that auto-deallocates, but do not make
     //       it auto-deref as it's an unsafe operation (no check that pointer
     //       outlives backing store of allocator)
     // TODO: Clarify safety contract of output pointer
     // TODO: Support overaligned allocations? Accept std::alloc::Layout?
-    pub fn alloc(&self, _size: usize) -> Option<NonNull<[u8]>> {
+    pub fn alloc_unbound(&self, _size: usize) -> Option<NonNull<[u8]>> {
         unimplemented!()
     }
 
@@ -121,7 +130,7 @@ impl Allocator {
 }
 
 impl Drop for Allocator {
-    // TODO: Deallocate backing store
+    // TODO: Deallocate backing store, check bitmap = 0 in debug builds
     fn drop(&mut self) {
         unimplemented!()
     }
