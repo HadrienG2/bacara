@@ -35,11 +35,11 @@
 //!   more likely to allocate more memory than the client needs on each request.
 //!
 //! Furthermore, pratical implementations of bitmap allocation on modern
-//! non-bit-addressable hardware will most efficiently handle allocation
-//! requests around an implementation-defined multiple of the block size, which
-//! we will refer to as a **superblock**. Depending on your requirements, you
-//! may want to tune your allocator based on superblock size rather than block
-//! size, and our API will allow you to do both.
+//! non-bit-addressable hardware will reach their peak CPU efficiency when
+//! processing allocation requests whose size is an implementation-defined
+//! multiple of the block size, which we will refer to as a **superblock**.
+//! Depending on your requirements, you may want to tune superblock size rather
+//! than block size, which is why our API will allow you to do both.
 //!
 //! You should tune your (super)block size based on the full range of envisioned
 //! allocation workloads, and even consider instantiating multiple allocators
@@ -49,7 +49,7 @@
 //!
 //! # Example
 //!
-//! FIXME: Oh yes I do need those
+//! FIXME: Oh yes I do need those, but API must be done first ;)
 
 
 #[cfg(test)]
@@ -59,3 +59,5 @@ mod tests {
         assert_eq!(2 + 2, 4);
     }
 }
+
+// TODO: Benchmark at various block sizes and show a graph on README
