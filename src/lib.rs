@@ -124,6 +124,7 @@ impl Allocator {
     }
 
     // TODO: Should not be called by the user but by RAII thingie, see above
+    // NOTE: Unlike system allocator, we don't need full layout, only size
     unsafe fn dealloc(_ptr: NonNull<[u8]>) {
         unimplemented!()
     }
