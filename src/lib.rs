@@ -249,14 +249,12 @@ impl Drop for Allocator {
             "Allocator was dropped while there were still live allocations"
         );
 
-        // This fence makes sure that the above bitmap check cannot be reordered
-        // after backing store deallocation.
-        atomic::fence(Ordering::Acquire);
-
         // Access the whole backing store mutably. This should be safe as...
-        // - We have checked that there are no allocations remaining in the
-        //   wild, so &mut backing store aliasing cannot occur.
-        // - We hold an &mut self, so no allocation should occur concurrently.
+        // - We have checked that there are no allocations in the wild, so &mut
+        //   backing store aliasing should not occur per this check's result.
+        // - We hold a unique &mut self ref, so we can assume that no one is
+        //   concurrently allocating or deallocating memory from the allocator,
+        //   and that the check's result will thus remain valid.
         // - The backing store pointer should be valid since it was checked to
         //   be valid at construction time, only Drop is allowed to invalidate
         //   it, and Drop will not be called more than once.
@@ -277,8 +275,7 @@ impl Drop for Allocator {
 
         // Deallocate the backing store. This is safe because...
         // - An allocator is always created with a backing store allocation
-        // - Only Drop can liberate that allocation
-        // - Drop is called at most once
+        // - Only Drop, which happens at most once, can liberate that allocation
         // - The layout matches that used in `Allocator::new_unchecked()`
         let backing_store_layout =
             Layout::from_size_align(backing_store_slice.len(), self.alignment)
