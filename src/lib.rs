@@ -194,7 +194,7 @@ impl Allocator {
         self.block_size() * Self::blocks_per_superblock()
     }
 
-    /// Number of bytes managed by this allocator (in bytes)
+    /// Size of this allocator's backing store (in bytes)
     fn capacity(&self) -> usize {
         self.usage_bitmap.len() * self.superblock_size()
     }
@@ -249,8 +249,110 @@ impl Allocator {
     ///
     /// `ptr` will be dangling after calling this function, and should neither
     /// be dereferenced nor passed to `dealloc_unbound` again.
-    pub unsafe fn dealloc_unbound(&self, _ptr: NonNull<[MaybeUninit<u8>]>) {
-        unimplemented!()
+    pub unsafe fn dealloc_unbound(&self, ptr: NonNull<[MaybeUninit<u8>]>) {
+        // In debug builds, check that the input pointer does come from our
+        // backing store, with all the properties that one would expect.
+        let ptr_start = ptr.cast::<MaybeUninit<u8>>().as_ptr();
+        let store_start = self.backing_store_start.as_ptr();
+        debug_assert!(ptr_start >= store_start,
+                      "Deallocated ptr starts before backing store");
+        let ptr_offset = (ptr_start as usize) - (store_start as usize);
+        debug_assert!(ptr_offset < self.capacity(),
+                      "Deallocated ptr starts after backing store");
+        debug_assert_eq!(ptr_offset % self.block_size(), 0,
+                         "Deallocated ptr doesn't start on a block boundary");
+        let ptr_len = ptr.as_ref().len();
+        debug_assert!(ptr_len < self.capacity() - ptr_offset,
+                      "Deallocated ptr overflows backing store");
+        debug_assert_eq!(ptr_len % self.block_size(), 0,
+                         "Deallocated ptr doesn't stop on a block boundary");
+
+        // Do not do anything beyond that for zero-sized allocations, by
+        // definition they have no associated storage block to be freed
+        if ptr_len == 0 { return; }
+
+        // Switch to block coordinates
+        let mut start_block_idx = ptr_offset / self.block_size();
+        let end_block_idx = start_block_idx + (ptr_len / self.block_size());
+
+        // Does the buffer starts in the middle of a superblock?
+        let local_start_idx = start_block_idx % Self::blocks_per_superblock();
+        if local_start_idx != 0 {
+            // If so, determine how many buffer blocks fall into that first
+            // superblock, bearing in mind it may not be used through the end...
+            let num_head_blocks =
+                (Self::blocks_per_superblock() - local_start_idx)
+                    .min(end_block_idx - start_block_idx);
+
+            // ...compute the corresponding bit pattern to be zeroed out...
+            let allocation_mask =
+                ((1 << num_head_blocks) - 1) << local_start_idx;
+
+            // ...and clear those bits. We must use Release barriers when
+            // deallocating memory to prevent previous writes into the
+            // deallocated buffer from being possibly reordered after the
+            // deallocation from the point of view of other threads.
+            let head_superblock_idx =
+                start_block_idx / Self::blocks_per_superblock();
+            let old_bits = self.usage_bitmap[head_superblock_idx]
+                               .fetch_and(!allocation_mask, Ordering::Release);
+
+            // In debug builds, make sure that the corresponding blocks were
+            // indeed marked as allocated.
+            debug_assert_eq!(
+                old_bits & allocation_mask, allocation_mask,
+                "Deallocated a head block which was marked as free"
+            );
+
+            // ...and now we can move forward in the buffer deallocation process
+            start_block_idx += num_head_blocks;
+
+            // If we're done, we should stop now, as the subsequent logic cannot
+            // handle the case of stopping in the middle of the head superblock.
+            if start_block_idx == end_block_idx { return; }
+        }
+
+        // If control reached this point, start_block_idx is now at the
+        // beginning of a superblock. We can thus switch to superblock-wise
+        // deallocation, which is both simpler and much faster, until we reach
+        // the end of the last fully allocated superblock.
+        let first_superblock_idx =
+            start_block_idx / Self::blocks_per_superblock();
+        let tail_superblock_idx =
+            end_block_idx / Self::blocks_per_superblock();
+        for superblock in &self.usage_bitmap[first_superblock_idx..tail_superblock_idx] {
+            // The general idea is to just reset every full superblock to 0,
+            // which means no allocated data. But in debug builds, we also
+            // check that they were set to an all-ones bit pattern before, as
+            // expected, otherwise some double free or corruption occured.
+            if cfg!(debug_assertions) {
+                debug_assert_eq!(
+                    superblock.swap(0, Ordering::Release), std::usize::MAX,
+                    "Deallocated a superblock which was marked partially free"
+                );
+            } else {
+                superblock.store(0, Ordering::Release);
+            }
+        }
+
+        // Are we done yet?
+        start_block_idx = tail_superblock_idx * Self::blocks_per_superblock();
+        if start_block_idx == end_block_idx { return; }
+
+        // Otherwise, our buffer ends in the middle of a superblock
+        let num_tail_blocks = end_block_idx - start_block_idx;
+
+        // Compute the bit pattern to be zeroed out in that superblock...
+        let allocation_mask = (1 << num_tail_blocks) - 1;
+
+        // ...and clear those bits, with the usual `Release` barrier
+        let old_bits = self.usage_bitmap[tail_superblock_idx]
+                           .fetch_and(!allocation_mask, Ordering::Release);
+
+        // In debug builds, make sure that the corresponding blocks were
+        // indeed marked as allocated, as we did before.
+        debug_assert_eq!(old_bits & allocation_mask, allocation_mask,
+                         "Deallocated a tail block which was marked as free");
     }
 }
 
