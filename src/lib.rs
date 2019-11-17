@@ -218,6 +218,8 @@ impl Allocator {
     //       clarify that this function is unsafe because the user _must_
     //       guarantee that the allocation will be dropped before the Allocator
     //       itself is dropped.
+    //       Or maybe not? That means one NonNull<Allocator> inside of each
+    //       boxed allocation, which seems unnecessarily wasteful.
     // TODO: Support overaligned allocations? Accept std::alloc::Layout?
     // NOTE: Should not call it alloc to leave API headroom for GlobalAlloc impl
     pub unsafe fn alloc_unbound(&self, _size: usize) -> Option<NonNull<[MaybeUninit<u8>]>> {
