@@ -19,7 +19,7 @@
 //!
 //! Allocation is done by scanning the bitmap for a suitably large hole
 //! (continuous sequence of zeroes), filling that hole with ones, and mapping 
-//! its index in the bitmap into a pointer within the backing store.
+//! the hole's index in the bitmap into a pointer within the backing store.
 //! Deallocation is done by mapping back from the user-provided pointer to a
 //! range of indices within the bitmap and resetting those bits to zero.
 //!
@@ -32,7 +32,7 @@
 //!   perspective, using the highest block size you can get away with is best.
 //! - But since allocations are tracked with block granularity, higher block
 //!   sizes mean less efficient use of the backing store, as the allocator is
-//!   more likely to allocate more memory than the client needs on each request.
+//!   more likely to allocate more memory than the client needs.
 //!
 //! Furthermore, pratical implementations of bitmap allocation on modern
 //! non-bit-addressable hardware will reach their peak CPU efficiency when
@@ -45,7 +45,7 @@
 //! allocation workloads, and even consider instantiating multiple allocators
 //! with different block sizes if your allocation patterns vary widely, because
 //! a block size that is a good compromise for a given allocation pattern may be
-//! a less than ideal choice for another allocation pattern.
+//! a less ideal choice for another allocation pattern.
 //!
 //! # Example
 //!
@@ -71,11 +71,13 @@ pub struct Allocator {
 }
 
 impl Allocator {
-    // These three ones must be inline as it's super-important that the compiler
+    // Computed properties
+    //
+    // These three fns must be inlined as it's super-important that the compiler
     // realizes that it can use a power-of-2 fast path for divisions and modulos
 
     #[inline(always)]
-    fn block_size(&self) -> usize {
+    const fn block_size(&self) -> usize {
         1 << self.block_size_shift
     }
 
@@ -85,7 +87,7 @@ impl Allocator {
     }
 
     #[inline(always)]
-    fn superblock_size(&self) -> usize {
+    const fn superblock_size(&self) -> usize {
         self.block_size() * Self::blocks_per_superblock()
     }
 
@@ -110,7 +112,7 @@ impl Allocator {
     // TODO: Basically mirror all questions from alloc_unbound
     // NOTE: Could actually be based on alloc_unbound and just wrap its
     //       Box-ish output into a lifetime-safety layer
-    pub fn alloc<'s>(&'s self, _size: usize) -> Option<&'s mut [MaybeUninit<u8>]> {
+    pub fn alloc_bound<'s>(&'s self, _size: usize) -> Option<&'s mut [MaybeUninit<u8>]> {
         unimplemented!()
     }
 
@@ -119,13 +121,20 @@ impl Allocator {
     //       outlives backing store of allocator)
     // TODO: Clarify safety contract of output pointer
     // TODO: Support overaligned allocations? Accept std::alloc::Layout?
+    // NOTE: Should not call it alloc to leave API headroom for GlobalAlloc impl
     pub fn alloc_unbound(&self, _size: usize) -> Option<NonNull<[MaybeUninit<u8>]>> {
         unimplemented!()
     }
 
-    // TODO: Should not be called by the user but by RAII thingie, see above
+    // TODO: Add realloc_bound and realloc_unbound APIs.
+
+    // TODO: Should not be called by the user but by RAII thingies, and
+    //       therefore should remain a private API, see above
     // NOTE: Unlike system allocator, we don't need full layout, only size
-    unsafe fn dealloc(_ptr: NonNull<[MaybeUninit<u8>]>) {
+    // NOTE: Should not be called dealloc, to leave API headroom for
+    //       implementing GlobalAlloc in the future
+    // NOTE: Unsafe because pointer must come from this allocator...
+    unsafe fn free(_ptr: NonNull<[MaybeUninit<u8>]>) {
         unimplemented!()
     }
 }
@@ -136,6 +145,9 @@ impl Drop for Allocator {
         unimplemented!()
     }
 }
+
+// TODO: Implement GlobalAlloc trait? Not of immediate use until new can be made
+//       const fn, but may want to keep the door open.
 
 
 #[cfg(test)]
