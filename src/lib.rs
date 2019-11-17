@@ -244,7 +244,7 @@ pub struct Allocator {
     /// bits in the bitmap, which we call a superblock.
     ///
     /// We use usize as our unsigned integer type because that's the one which
-    /// is most likely to have native atomic operations on a given CPU arch, but
+    /// is most likely to have native atomic operations on a given CPU arch. But
     /// this may lead to very big superblocks on future CPU archs, so we might
     /// need to reconsider this decision in the future and use e.g. `AtomicU32`.
     usage_bitmap: Box<[AtomicUsize]>,
