@@ -158,7 +158,7 @@ impl Allocator {
                                      .collect::<Vec<_>>()
                                      .into_boxed_slice();
 
-        // Return the allocator
+        // Build and return the allocator struct
         Allocator {
             backing_store,
             usage_bitmap,
@@ -214,11 +214,10 @@ impl Allocator {
         unimplemented!()
     }
 
-    // TODO: Add some Box-ish abstraction that auto-deallocates, but do not make
-    //       it auto-deref as it's an unsafe operation (no check that pointer
-    //       outlives backing store of allocator), and clarify that it's unsafe
-    //       to drop it after the Allocator has been dropped.
-    // TODO: Clarify safety contract of output pointer
+    // TODO: Add some Box-ish abstraction that auto-derefs and auto-deallocates,
+    //       clarify that this function is unsafe because the user _must_
+    //       guarantee that the allocation will be dropped before the Allocator
+    //       itself is dropped.
     // TODO: Support overaligned allocations? Accept std::alloc::Layout?
     // NOTE: Should not call it alloc to leave API headroom for GlobalAlloc impl
     pub unsafe fn alloc_unbound(&self, _size: usize) -> Option<NonNull<[MaybeUninit<u8>]>> {
