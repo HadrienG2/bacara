@@ -232,7 +232,24 @@ impl Allocator {
     /// that _will_ unleash undefined behavior.
     //
     // TODO: Support overaligned allocations by accepting `std::alloc::Layout`
-    pub fn alloc_unbound(&self, _size: usize) -> Option<NonNull<[MaybeUninit<u8>]>> {
+    pub fn alloc_unbound(&self, size: usize) -> Option<NonNull<[MaybeUninit<u8>]>> {
+        // Handle the zero-sized edge case
+        if size == 0 {
+            return Some(
+                // This is safe because...
+                // - The backing store pointer is obviously valid for 0 elements
+                // - It has the minimal alignment we promise to always offer
+                // - Lifetimes don't matter as we're building a raw pointer
+                // - We won't overflow isize with a zero-length slice
+                // - &mut aliasing is not an issue for zero-sized slices.
+                unsafe { std::slice::from_raw_parts_mut(
+                    self.backing_store_start.as_ptr(),
+                    0
+                ) }.into()
+            );
+        }
+
+        // TODO: Now handle serious allocations
         unimplemented!()
     }
 
