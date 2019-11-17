@@ -51,185 +51,23 @@
 //!
 //! FIXME: Oh yes I do need those, but API must be done first ;)
 
+pub mod builder;
+
 use std::{
     alloc::{self, Layout},
     mem::{self, MaybeUninit},
     ptr::NonNull,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{self, AtomicUsize, Ordering},
 };
-
-
-/// Builder for a bitmap allocator
-//
-// TODO: Make everything `const fn` so that the builder can be used to build a
-//       global allocator without dirty lazy_static/OnceCell tricks, once
-//       Rust's const-eval is powerful enough for that.
-#[derive(Debug)]
-pub struct AllocatorBuilder {
-    /// Block alignment in bytes
-    /// - Will be set to 1 if unspecified
-    /// - Must be nonzero and a power of 2, per `std::alloc::Layout` demands
-    block_align: Option<usize>,
-
-    /// Block size in bytes
-    /// - Must be specified, either directly of via superblock size
-    /// - Must be a multiple of alignment, so that all blocks are aligned
-    /// - Must be a power of 2, so that implementation has fast divide/modulo
-    block_size: Option<usize>,
-
-    /// Capacity of the allocator's backing store in bytes
-    /// - Must be specified
-    /// - Must be nonzero, per system allocator demands
-    /// - Will be rounded to the next multiple of superblock size, to satisfy
-    ///   allocator alignment needs and simplify the bitmap implementation.
-    /// - This rounding must not overflow usize::MAX
-    capacity: Option<usize>,
-}
-
-impl AllocatorBuilder {
-    /// Set the allocator's storage block alignment (in bytes)
-    ///
-    /// All buffers produced by the allocator will have this alignment.
-    ///
-    /// Alignment must be a power of 2, and will be set to 1 (byte alignment)
-    /// by default if left unspecified.
-    pub fn alignment(mut self, align: usize) -> Self {
-        // NOTE: Being a power of 2 implies being nonzero
-        assert!(align.is_power_of_two(), "Alignment must be a power of 2");
-        assert!(self.block_align.replace(align).is_none(),
-                "Alignment must only be set once");
-        self
-    }
-
-    /// Set the allocator's storage block size (in bytes)
-    ///
-    /// The block size is the granularity at which the allocator manages its
-    /// backing store, which has a large impact on both performance and memory
-    /// usage. Please read this crate's top-level documentation for details.
-    ///
-    /// The block size must be a multiple of the alignment and a power of 2.
-    ///
-    /// You must set either the block size and superblock size, but not both.
-    pub fn block_size(mut self, block_size: usize) -> Self {
-        assert!(block_size.is_power_of_two(),
-                "Block size must be a power of 2");
-        assert!(self.block_size.replace(block_size).is_none(),
-                "Block size must only be set once");
-        self
-    }
-
-    /// Set the allocator's superblock size (in bytes)
-    ///
-    /// The superblock size is an implementation-defined multiple of the block
-    /// size, which corresponds to the allocation request size for which the
-    /// allocator should exhibit optimal CPU performance.
-    ///
-    /// The superblock size must be a multiple of the alignment, of
-    /// `Allocator::blocks_per_superblock()`, and a power of 2.
-    ///
-    /// You must set either the block size and superblock size, but not both.
-    pub fn superblock_size(self, superblock_size: usize) -> Self {
-        assert_eq!(superblock_size % Allocator::blocks_per_superblock(), 0,
-                   "Superblock size must be a multiple of \
-                    Allocator::blocks_per_superblock()");
-        let block_size = superblock_size / Allocator::blocks_per_superblock();
-        self.block_size(block_size)
-    }
-
-    /// Set the allocator's approximate backing store capacity (in bytes)
-    ///
-    /// This is the amount of memory that is managed by the allocator, and
-    /// therefore an estimate of how much memory can be allocated from it,
-    /// bearing in mind that block-based memory management implies that some
-    /// bytes will go to waste when allocation requests are not a multiple of
-    /// the block size of the allocator.
-    ///
-    /// Due to implementation constraints, the actual backing store capacity
-    /// will be rounded up to the next multiple of the superblock size.
-    ///
-    /// The backing store capacity must not be zero, and the aforementioned
-    /// rounding should not result in the requested capacity going above
-    /// the `usize::MAX` limit.
-    pub fn capacity(mut self, capacity: usize) -> Self {
-        assert!(capacity != 0, "Backing store capacity must not be zero");
-        assert!(self.capacity.replace(capacity).is_none(),
-                "Backing store capacity must only be set once");
-        self
-    }
-
-    /// Build the previously configured allocator
-    ///
-    /// You must have configured at least a block size and a backing store
-    /// capacity before calling this function.
-    pub fn build(self) -> Allocator {
-        // Select block alignment (which will be the backing store alignment)
-        let block_align = self.block_align.unwrap_or(1);
-
-        // Check requested block size
-        let block_size = self.block_size
-                             .expect("You must specify a block size");
-        assert_eq!(block_size % block_align, 0,
-                   "Block size must be a multiple of alignment");
-
-        // Round requested capacity to next multiple of superblock size
-        let mut capacity =
-            self.capacity.expect("You must specify a backing store capacity");
-        let superblock_size = block_size * Allocator::blocks_per_superblock();
-        let extra_bytes = capacity % superblock_size;
-        if extra_bytes != 0 {
-            capacity =
-                capacity.checked_add(superblock_size - extra_bytes)
-                        .expect("Excessive backing store capacity requested");
-        }
-
-        // Allocate the backing store
-        //
-        // This is safe because we've checked all the preconditions of the
-        // memory allocator throughout the allocator building process, including
-        // the fact that the backing store capacity is nonzero.
-        let backing_store_layout =
-            Layout::from_size_align(capacity, block_align)
-                   .expect("All Layout preconditions should be checked above");
-        let backing_store_ptr = unsafe { alloc::alloc(backing_store_layout) };
-        if backing_store_ptr.is_null() {
-            alloc::handle_alloc_error(backing_store_layout);
-        }
-
-        // Turn the backing store into its final form. This is safe because...
-        // - We don't care about lifetimes as we want a NonNull in the end
-        // - We checked that the pointer isn't null above, and a pointer to u8
-        //   cannot be misaligned as it has alignment 1.
-        // - There can be no aliasing issues as the allocation was just created
-        // - We use MaybeUninit to handle uninitialized bytes.
-        let backing_store = unsafe {
-            std::slice::from_raw_parts_mut(
-                backing_store_ptr.cast::<MaybeUninit<u8>>(),
-                capacity
-            ).into()
-        };
-
-        // Build the usage-tracking bitmap
-        let usage_bitmap = std::iter::repeat(0)
-                                     .map(AtomicUsize::new)
-                                     .take(capacity / superblock_size)
-                                     .collect::<Vec<_>>()
-                                     .into_boxed_slice();
-
-        // Return the allocator
-        Allocator {
-            backing_store,
-            usage_bitmap,
-            block_size_shift: block_size.trailing_zeros() as u8,
-            alignment: block_align,
-        }
-    }
-}
 
 
 /// A thread-safe bitmap allocator
 #[derive(Debug)]
 pub struct Allocator {
     /// Backing store from which we'll be allocating memory
+    ///
+    /// Guaranteed by `AllocatorBuilder` to contain an integer number of
+    /// superblocks, each of which maps into one `AtomicUsize` in usage_bitmap.
     backing_store: NonNull<[MaybeUninit<u8>]>,
 
     /// Bitmap tracking usage of the backing store's storage blocks
@@ -252,31 +90,80 @@ pub struct Allocator {
     /// Bitshift-based representation of the block size
     ///
     /// This odd value storage is not a space optimization, but a way to tell
-    /// the compiler's optimizer that the block size is a power of two so that
-    /// it optimizes our integer divisions and remainders. Please use methods
-    /// like block_size() to query the block size.
+    /// the compiler's optimizer that the block size has to be a power of two so
+    /// that it optimizes our integer divisions and remainders. Please use
+    /// methods like block_size() to query the block size.
     block_size_shift: u8,
 
     /// Backing store alignment (and thus storage block alignment)
     ///
     /// We must keep track of this because Rust's allocator API will expect us
     /// to give back this information upon deallocating the backing store.
-    ///
-    /// It will also prove useful when we try to implement GlobalAlloc, which
-    /// requires support for overaligned allocations.
     alignment: usize,
 }
 
 impl Allocator {
     /// Start building an allocator
     ///
-    /// See the AllocatorBuilder documentation for more details on the allocator
-    /// configuration process.
-    pub const fn new() -> AllocatorBuilder {
-        AllocatorBuilder {
-            block_align: None,
-            block_size: None,
-            capacity: None,
+    /// See the `AllocatorBuilder` documentation for more details on the
+    /// subsequent allocator configuration process.
+    pub const fn new() -> builder::AllocatorBuilder {
+        builder::AllocatorBuilder::new()
+    }
+
+    /// Allocator constructor proper, without invariant checking
+    ///
+    /// This method mostly exists as an implementation detail of
+    /// `AllocatorBuilder`, and there is no plan to make it public at the moment
+    /// since I cannot think of a single reason to do so. You're not really
+    /// building Allocators in a tight loop, are you?
+    ///
+    /// # Safety
+    ///
+    /// The block_align, block_size and capacity parameters may be assumed to
+    /// uphold all the preconditions listed as "must" bullet points in the
+    /// corresponding `AllocatorBuilder` struct members' documentation.
+    pub(crate) unsafe fn new_unchecked(block_align: usize,
+                                       block_size: usize,
+                                       capacity: usize) -> Self {
+        // Allocate the backing store
+        //
+        // This is safe because we've checked all preconditions of `Layout`
+        // and `alloc()` during the `AllocatorBuilder` construction process,
+        // including the fact that capacity is not zero.
+        let backing_store_layout =
+            Layout::from_size_align(capacity, block_align)
+                   .expect("All Layout preconditions should have been checked");
+        let backing_store_ptr = alloc::alloc(backing_store_layout);
+        if backing_store_ptr.is_null() {
+            alloc::handle_alloc_error(backing_store_layout);
+        }
+
+        // Turn the backing store into its final form. This is safe because...
+        // - We don't care about lifetimes as we ultimately want a NonNull.
+        // - We checked that the pointer isn't null above, and a pointer to u8
+        //   cannot be misaligned as it has alignment 1.
+        // - There can be no &mut aliasing as the allocation was just created.
+        // - We use MaybeUninit to handle uninitialized bytes.
+        let backing_store = std::slice::from_raw_parts_mut(
+                                backing_store_ptr.cast::<MaybeUninit<u8>>(),
+                                capacity
+                            ).into();
+
+        // Build the usage-tracking bitmap
+        let superblock_size = block_size * Self::blocks_per_superblock();
+        let usage_bitmap = std::iter::repeat(0)
+                                     .map(AtomicUsize::new)
+                                     .take(capacity / superblock_size)
+                                     .collect::<Vec<_>>()
+                                     .into_boxed_slice();
+
+        // Return the allocator
+        Allocator {
+            backing_store,
+            usage_bitmap,
+            block_size_shift: block_size.trailing_zeros() as u8,
+            alignment: block_align,
         }
     }
 
@@ -329,11 +216,12 @@ impl Allocator {
 
     // TODO: Add some Box-ish abstraction that auto-deallocates, but do not make
     //       it auto-deref as it's an unsafe operation (no check that pointer
-    //       outlives backing store of allocator)
+    //       outlives backing store of allocator), and clarify that it's unsafe
+    //       to drop it after the Allocator has been dropped.
     // TODO: Clarify safety contract of output pointer
     // TODO: Support overaligned allocations? Accept std::alloc::Layout?
     // NOTE: Should not call it alloc to leave API headroom for GlobalAlloc impl
-    pub fn alloc_unbound(&self, _size: usize) -> Option<NonNull<[MaybeUninit<u8>]>> {
+    pub unsafe fn alloc_unbound(&self, _size: usize) -> Option<NonNull<[MaybeUninit<u8>]>> {
         unimplemented!()
     }
 
@@ -353,16 +241,24 @@ impl Allocator {
 impl Drop for Allocator {
     fn drop(&mut self) {
         // Make sure that no storage blocks were allocated, as the corresponding
-        // pointers will become dangling as the allocator is dropped...
+        // pointers will become dangling when the allocator is dropped...
         assert!(
             self.usage_bitmap.iter()
                              .all(|bits| bits.load(Ordering::Relaxed) == 0),
             "Allocator was dropped while there were still live allocations"
         );
 
-        // Access the backing store. This should be safe because Drop is the
-        // only entity that can drop it, and it takes &mut self so it should be
-        // allowed to get a mut reference to it without aliasing.
+        // This fence makes sure that the above bitmap check cannot be reordered
+        // after backing store deallocation.
+        atomic::fence(Ordering::Acquire);
+
+        // Access the whole backing store mutably. This should be safe as...
+        // - We have checked that there are no allocations remaining in the
+        //   wild, so &mut backing store aliasing cannot occur.
+        // - We hold an &mut self, so no allocation should occur concurrently.
+        // - The backing store pointer should be valid since it was checked to
+        //   be valid at construction time, only Drop is allowed to invalidate
+        //   it, and Drop will not be called more than once.
         //
         // However, note that there is currently a little unsoundness problem
         // with taking references to data which is going to be deallocated,
@@ -382,7 +278,7 @@ impl Drop for Allocator {
         // - An allocator is always created with a backing store allocation
         // - Only Drop can liberate that allocation
         // - Drop is called at most once
-        // - The layout matches that of AllocatorBuilder::build()
+        // - The layout matches that used in `Allocator::new_unchecked()`
         let backing_store_layout =
             Layout::from_size_align(backing_store_slice.len(), self.alignment)
                    .expect("All Layout preconditions were checked by builder");
