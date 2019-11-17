@@ -57,18 +57,18 @@ use std::{
     alloc::{self, Layout},
     mem::{self, MaybeUninit},
     ptr::NonNull,
-    sync::atomic::{self, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 
 /// A thread-safe bitmap allocator
 #[derive(Debug)]
 pub struct Allocator {
-    /// Backing store from which we'll be allocating memory
+    /// Beginning of the backing store from which we'll be allocating memory
     ///
     /// Guaranteed by `AllocatorBuilder` to contain an integer number of
     /// superblocks, each of which maps into one `AtomicUsize` in usage_bitmap.
-    backing_store: NonNull<[MaybeUninit<u8>]>,
+    backing_store_start: NonNull<MaybeUninit<u8>>,
 
     /// Bitmap tracking usage of the backing store's storage blocks
     ///
@@ -134,21 +134,10 @@ impl Allocator {
         let backing_store_layout =
             Layout::from_size_align(capacity, block_align)
                    .expect("All Layout preconditions should have been checked");
-        let backing_store_ptr = alloc::alloc(backing_store_layout);
-        if backing_store_ptr.is_null() {
-            alloc::handle_alloc_error(backing_store_layout);
-        }
-
-        // Turn the backing store into its final form. This is safe because...
-        // - We don't care about lifetimes as we ultimately want a NonNull.
-        // - We checked that the pointer isn't null above, and a pointer to u8
-        //   cannot be misaligned as it has alignment 1.
-        // - There can be no &mut aliasing as the allocation was just created.
-        // - We use MaybeUninit to handle uninitialized bytes.
-        let backing_store = std::slice::from_raw_parts_mut(
-                                backing_store_ptr.cast::<MaybeUninit<u8>>(),
-                                capacity
-                            ).into();
+        let backing_store_start =
+            NonNull::new(alloc::alloc(backing_store_layout))
+                    .unwrap_or_else(|| alloc::handle_alloc_error(backing_store_layout))
+                    .cast::<MaybeUninit<u8>>();
 
         // Build the usage-tracking bitmap
         let superblock_size = block_size * Self::blocks_per_superblock();
@@ -160,7 +149,7 @@ impl Allocator {
 
         // Build and return the allocator struct
         Allocator {
-            backing_store,
+            backing_store_start,
             usage_bitmap,
             block_size_shift: block_size.trailing_zeros() as u8,
             alignment: block_align,
@@ -205,6 +194,11 @@ impl Allocator {
         self.block_size() * Self::blocks_per_superblock()
     }
 
+    /// Number of bytes managed by this allocator (in bytes)
+    fn capacity(&self) -> usize {
+        self.usage_bitmap.len() * self.superblock_size()
+    }
+
     /// Safely allocate a memory buffer, with auto-liberation
     ///
     /// This is a safe interface on top of the raw memory allocation facility
@@ -231,12 +225,11 @@ impl Allocator {
     ///
     /// This function is not unsafe per se, in the sense that no undefined
     /// behavior can occur as a direct result of calling it. However, you should
-    /// make sure that the output buffer pointer is passed back to
-    /// `Allocator::dealloc_unbound()` before the allocator is dropped, or else:
+    /// really make sure that the output buffer pointer is passed back to
+    /// `Allocator::dealloc_unbound()` before the allocator is dropped.
     ///
-    /// 1. `Allocator::drop()` will panic in debug builds
-    /// 2. The pointer will be invalidated, and dereferencing it after that
-    ///    _will_ unleash undefined behavior.
+    /// Otherwise, the pointer will be invalidated, and dereferencing it after
+    /// that _will_ unleash undefined behavior.
     //
     // TODO: Support overaligned allocations by accepting `std::alloc::Layout`
     pub fn alloc_unbound(&self, _size: usize) -> Option<NonNull<[MaybeUninit<u8>]>> {
@@ -265,50 +258,20 @@ impl Drop for Allocator {
     fn drop(&mut self) {
         // Make sure that no storage blocks were allocated, as the corresponding
         // pointers will become dangling when the allocator is dropped...
-        //
-        // TODO: This should only be a debug check, but is currently necessary
-        //       for drop to be safe as an &mut to the backing store must be
-        //       currently be constructed in order to query its length. Fix this
-        //       once one can query the length of a `NonNull<[T]>` without
-        //       materializing a reference to it.
-        assert!(
+        debug_assert!(
             self.usage_bitmap.iter()
                              .all(|bits| bits.load(Ordering::Relaxed) == 0),
             "Allocator was dropped while there were still live allocations"
         );
-
-        // Access the whole backing store mutably. This should be safe as...
-        // - We have checked that there are no allocations in the wild, so &mut
-        //   backing store aliasing should not occur per this check's result.
-        // - We hold a unique &mut self ref, so we can assume that no one is
-        //   concurrently allocating or deallocating memory from the allocator,
-        //   and that the check's result will thus remain valid.
-        // - The backing store pointer should be valid since it was checked to
-        //   be valid at construction time, only Drop is allowed to invalidate
-        //   it, and Drop will not be called more than once.
-        //
-        // However, note that there is currently a little unsoundness problem
-        // with taking references to data which is going to be deallocated,
-        // because rustc is currently unable to tell LLVM that it should not
-        // access the data behind the reference after deallocation.
-        //
-        // Now, in principle, LLVM has no reason to insert new accesses, and it
-        // currently doesn't, but once a fix for that is implemented in `std`,
-        // we may want to implement the same fix if it requires some manual
-        // intervention in the allocating code (TODO).
-        //
-        // Here's a discussion of this problem for reference:
-        // https://github.com/rust-lang/rust/issues/55005
-        let backing_store_slice = unsafe { self.backing_store.as_mut() };
 
         // Deallocate the backing store. This is safe because...
         // - An allocator is always created with a backing store allocation
         // - Only Drop, which happens at most once, can liberate that allocation
         // - The layout matches that used in `Allocator::new_unchecked()`
         let backing_store_layout =
-            Layout::from_size_align(backing_store_slice.len(), self.alignment)
+            Layout::from_size_align(self.capacity(), self.alignment)
                    .expect("All Layout preconditions were checked by builder");
-        unsafe { alloc::dealloc(backing_store_slice.as_mut_ptr().cast::<u8>(),
+        unsafe { alloc::dealloc(self.backing_store_start.cast::<u8>().as_ptr(),
                                 backing_store_layout); }
     }
 }
