@@ -296,8 +296,8 @@ impl Allocator {
             let allocation_mask =
                 ((1 << num_head_blocks) - 1) << local_start_idx;
 
-            // ...and clear those bits. Required memory ordering on those bitmap
-            // operations is enforced by the Release fence above.
+            // ...and clear those bits. As a reminder, required memory ordering
+            // on bitmap operations is enforced by the Release fence above.
             let head_superblock_idx =
                 start_block_idx / Self::blocks_per_superblock();
             let old_bits = self.usage_bitmap[head_superblock_idx]
