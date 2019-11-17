@@ -352,9 +352,9 @@ impl Allocator {
 
 impl Drop for Allocator {
     fn drop(&mut self) {
-        // In debug builds, make sure there are no dangling allocations, as the
-        // corresponding pointers would become dangling...
-        debug_assert!(
+        // Make sure that no storage blocks were allocated, as the corresponding
+        // pointers will become dangling as the allocator is dropped...
+        assert!(
             self.usage_bitmap.iter()
                              .all(|bits| bits.load(Ordering::Relaxed) == 0),
             "Allocator was dropped while there were still live allocations"
