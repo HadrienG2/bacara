@@ -213,6 +213,8 @@ impl Allocator {
     //
     // FIXME: Add a Box-ish abstraction that auto-deallocates and auto-derefs,
     //        made safe by the use of a lifetime-based API.
+    //
+    // TODO: As alloc_unbound matures, adapt alloc_bound accordingly.
     pub fn alloc_bound<'s>(&'s self, _size: usize) -> Option<&'s mut [MaybeUninit<u8>]> {
         unimplemented!()
     }
@@ -231,7 +233,9 @@ impl Allocator {
     /// Otherwise, the pointer will be invalidated, and dereferencing it after
     /// that _will_ unleash undefined behavior.
     //
-    // TODO: Support overaligned allocations by accepting `std::alloc::Layout`
+    // TODO: Prepare support for overaligned allocations and `GlobalAlloc` impl
+    //       by accepting `std::alloc::Layout`. Initially, we can just return
+    //       None when the requested alignment is higher than self.alignment.
     pub fn alloc_unbound(&self, size: usize) -> Option<NonNull<[MaybeUninit<u8>]>> {
         // Handle the zero-sized edge case
         if size == 0 {
