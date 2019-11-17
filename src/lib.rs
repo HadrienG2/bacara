@@ -300,7 +300,7 @@ impl Allocator {
         // reallocating and filling the memory that we are liberating.
         atomic::fence(Ordering::Release);
 
-        // Switch to block coordinates
+        // Switch to block coordinates as that's what our bitmap speaks
         let mut start_block_idx = ptr_offset / self.block_size();
         let end_block_idx = start_block_idx + (ptr_len / self.block_size());
 
