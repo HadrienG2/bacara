@@ -57,7 +57,7 @@ use std::{
     alloc::{self, Layout},
     mem::{self, MaybeUninit},
     ptr::NonNull,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{self, AtomicUsize, Ordering},
 };
 
 
@@ -250,6 +250,8 @@ impl Allocator {
     /// `ptr` will be dangling after calling this function, and should neither
     /// be dereferenced nor passed to `dealloc_unbound` again.
     pub unsafe fn dealloc_unbound(&self, ptr: NonNull<[MaybeUninit<u8>]>) {
+        // TODO: Try to deduplicate this code.
+
         // In debug builds, check that the input pointer does come from our
         // backing store, with all the properties that one would expect.
         let ptr_start = ptr.cast::<MaybeUninit<u8>>().as_ptr();
@@ -271,6 +273,12 @@ impl Allocator {
         // definition they have no associated storage block to be freed
         if ptr_len == 0 { return; }
 
+        // Make sure that the subsequent writes to the allocation bitmap are
+        // ordered after any previous access to the buffer by the current
+        // thread, to avoid data races with other threads concurrently
+        // reallocating and filling the memory that we are liberating.
+        atomic::fence(Ordering::Release);
+
         // Switch to block coordinates
         let mut start_block_idx = ptr_offset / self.block_size();
         let end_block_idx = start_block_idx + (ptr_len / self.block_size());
@@ -288,14 +296,12 @@ impl Allocator {
             let allocation_mask =
                 ((1 << num_head_blocks) - 1) << local_start_idx;
 
-            // ...and clear those bits. We must use Release barriers when
-            // deallocating memory to prevent previous writes into the
-            // deallocated buffer from being possibly reordered after the
-            // deallocation from the point of view of other threads.
+            // ...and clear those bits. Required memory ordering on those bitmap
+            // operations is enforced by the Release fence above.
             let head_superblock_idx =
                 start_block_idx / Self::blocks_per_superblock();
             let old_bits = self.usage_bitmap[head_superblock_idx]
-                               .fetch_and(!allocation_mask, Ordering::Release);
+                               .fetch_and(!allocation_mask, Ordering::Relaxed);
 
             // In debug builds, make sure that the corresponding blocks were
             // indeed marked as allocated.
@@ -327,11 +333,11 @@ impl Allocator {
             // expected, otherwise some double free or corruption occured.
             if cfg!(debug_assertions) {
                 debug_assert_eq!(
-                    superblock.swap(0, Ordering::Release), std::usize::MAX,
+                    superblock.swap(0, Ordering::Relaxed), std::usize::MAX,
                     "Deallocated a superblock which was marked partially free"
                 );
             } else {
-                superblock.store(0, Ordering::Release);
+                superblock.store(0, Ordering::Relaxed);
             }
         }
 
@@ -345,9 +351,9 @@ impl Allocator {
         // Compute the bit pattern to be zeroed out in that superblock...
         let allocation_mask = (1 << num_tail_blocks) - 1;
 
-        // ...and clear those bits, with the usual `Release` barrier
+        // ...and clear those bits.
         let old_bits = self.usage_bitmap[tail_superblock_idx]
-                           .fetch_and(!allocation_mask, Ordering::Release);
+                           .fetch_and(!allocation_mask, Ordering::Relaxed);
 
         // In debug builds, make sure that the corresponding blocks were
         // indeed marked as allocated, as we did before.
@@ -359,7 +365,12 @@ impl Allocator {
 impl Drop for Allocator {
     fn drop(&mut self) {
         // Make sure that no storage blocks were allocated, as the corresponding
-        // pointers will become dangling when the allocator is dropped...
+        // pointers will become dangling when the allocator is dropped.
+        //
+        // We don't need any particular memory ordering constraint because our
+        // &mut self allows us to assume exclusive access to the `Allocator`
+        // management structures, without any fear that other threads might be
+        // concurrently calling allocation and deallocation methods.
         debug_assert!(
             self.usage_bitmap.iter()
                              .all(|bits| bits.load(Ordering::Relaxed) == 0),
