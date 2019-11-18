@@ -195,6 +195,10 @@ impl Allocator {
     }
 
     /// Size of this allocator's backing store (in bytes)
+    ///
+    /// This is the maximal amount of memory that may be allocated from this
+    /// allocator, assuming no memory waste due to unused block bytes and no
+    /// fragmentation issues.
     fn capacity(&self) -> usize {
         self.usage_bitmap.len() * self.superblock_size()
     }
