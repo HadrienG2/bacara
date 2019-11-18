@@ -275,8 +275,6 @@ impl Allocator {
     /// `ptr` will be dangling after calling this function, and should neither
     /// be dereferenced nor passed to `dealloc_unbound` again.
     pub unsafe fn dealloc_unbound(&self, ptr: NonNull<[MaybeUninit<u8>]>) {
-        // TODO: Try to deduplicate this code.
-
         // In debug builds, check that the input pointer does come from our
         // backing store, with all the properties that one would expect.
         let ptr_start = ptr.cast::<MaybeUninit<u8>>().as_ptr();
@@ -305,69 +303,48 @@ impl Allocator {
         atomic::fence(Ordering::Release);
 
         // Switch to block coordinates as that's what our bitmap speaks
-        let mut start_block_idx = ptr_offset / self.block_size();
-        let end_block_idx = start_block_idx + (ptr_len / self.block_size());
+        let mut block_idx = ptr_offset / self.block_size();
+        let end_block_idx = block_idx + (ptr_len / self.block_size());
 
-        // Does the buffer starts in the middle of a superblock?
-        let local_start_idx = start_block_idx % Self::blocks_per_superblock();
+        // Does our first block fall in the middle of a superblock?
+        let local_start_idx = block_idx % Self::blocks_per_superblock();
         if local_start_idx != 0 {
-            // If so, determine how many buffer blocks fall into that first
-            // superblock, bearing in mind it may not be used through the end...
-            let num_head_blocks =
+            // Compute index of that superblock
+            let superblock_idx = block_idx / Self::blocks_per_superblock();
+
+            // Compute how many blocks are allocated within the superblock,
+            // bearing in mind that the buffer may end there
+            let local_len =
                 (Self::blocks_per_superblock() - local_start_idx)
-                    .min(end_block_idx - start_block_idx);
+                    .min(end_block_idx - block_idx);
 
-            // ...and deallocate those blocks.
-            let head_superblock_idx =
-                start_block_idx / Self::blocks_per_superblock();
-            self.dealloc_blocks(head_superblock_idx,
-                                local_start_idx,
-                                num_head_blocks);
+            // Deallocate leading buffer blocks in this first superblock
+            self.dealloc_blocks(superblock_idx, local_start_idx, local_len);
 
-            // ...and now we can move forward in the buffer deallocation process
-            start_block_idx += num_head_blocks;
-
-            // If we're done, we should stop now, as the subsequent logic cannot
-            // handle the case of stopping in the middle of the head superblock.
-            if start_block_idx == end_block_idx { return; }
+            // Advance block pointer, stop if all blocks were liberated
+            block_idx += local_len;
+            if block_idx == end_block_idx { return; }
         }
 
-        // If control reached this point, start_block_idx is now at the
-        // beginning of a superblock. We can thus switch to superblock-wise
-        // deallocation, which is both simpler and much faster, until we reach
-        // the end of the last fully allocated superblock.
-        let first_superblock_idx =
-            start_block_idx / Self::blocks_per_superblock();
-        let tail_superblock_idx =
-            end_block_idx / Self::blocks_per_superblock();
-        for superblock in &self.usage_bitmap[first_superblock_idx..tail_superblock_idx] {
-            // The general idea is to just reset every full superblock to 0,
-            // which means no allocated data. But in debug builds, we also
-            // check that they were set to an all-ones bit pattern before, as
-            // expected, otherwise some double free or corruption occured.
-            if cfg!(debug_assertions) {
-                debug_assert_eq!(
-                    superblock.swap(Self::EMPTY_SUPERBLOCK_MASK,
-                                    Ordering::Relaxed),
-                    Self::FULL_SUPERBLOCK_MASK,
-                    "Deallocated a superblock which was marked partially free"
-                );
-            } else {
-                superblock.store(Self::EMPTY_SUPERBLOCK_MASK,
-                                 Ordering::Relaxed);
-            }
+        // If control reached this point, block_idx is now at the start of a
+        // superblock, so we can switch to faster superblock-wise deallocation.
+        // Deallocate all superblocks until the one where end_block_idx resides.
+        let start_superblock_idx = block_idx / Self::blocks_per_superblock();
+        let end_superblock_idx = end_block_idx / Self::blocks_per_superblock();
+        for superblock_idx in start_superblock_idx..end_superblock_idx {
+            self.dealloc_superblock(superblock_idx);
         }
 
-        // Are we done yet?
-        start_block_idx = tail_superblock_idx * Self::blocks_per_superblock();
-        if start_block_idx == end_block_idx { return; }
+        // Advance block pointer, stop if all blocks were liberated
+        block_idx = end_superblock_idx * Self::blocks_per_superblock();
+        if block_idx == end_block_idx { return; }
 
-        // Otherwise, our buffer ends in the middle of a superblock
-        let num_tail_blocks = end_block_idx - start_block_idx;
-        self.dealloc_blocks(tail_superblock_idx, 0, num_tail_blocks);
+        // Deallocate trailing buffer blocks in the last superblock
+        let remaining_len = end_block_idx - block_idx;
+        self.dealloc_blocks(end_superblock_idx, 0, remaining_len);
     }
 
-    /// Bit pattern for allocating within a superblock
+    /// Bit pattern for (de)allocating within a superblock
     ///
     /// Computes a superblock bitmask of the form 0b001111110000..., which can
     /// be used for targeting a subset of blocks within a superblock for
@@ -386,13 +363,37 @@ impl Allocator {
         ((1 << len) - 1) << start
     }
 
-    /// Bit pattern covering no blocks in a superblock
-    const EMPTY_SUPERBLOCK_MASK: usize = 0;
+    /// Atomically deallocate a full superblock
+    ///
+    /// This operation has `Relaxed` memory ordering and must be preceded by an
+    /// `Acquire` memory barrier in order to avoid deallocation being reordered
+    /// before usage of the memory block by the compiler or CPU.
+    fn dealloc_superblock(&self, superblock_idx: usize) {
+        // Check interface preconditions in debug builds
+        debug_assert!(superblock_idx < self.usage_bitmap.len(),
+                      "Superblock index is out of bitmap range");
 
-    /// Bit pattern covering a full superblock
-    const FULL_SUPERBLOCK_MASK: usize = std::usize::MAX;
+        // Deallocating a full superblock is just a matter of setting all of its
+        // bits to zero, which can be done simply by storing 0 in it
+        let superblock = &self.usage_bitmap[superblock_idx];
+        if cfg!(debug_assertions) {
+            // In debug builds, we make sure that the superblock was indeed
+            // marked as fully allocated (i.e. all bits set to 1), in order to
+            // detect various forms of incorrect allocator usage including
+            // double deallocation of memory buffers.
+            debug_assert_eq!(
+                superblock.swap(0, Ordering::Relaxed),
+                std::usize::MAX,
+                "Deallocated superblock which wasn't fully marked as allocated"
+            );
+        } else {
+            // In release builds, we just store 0 without checking the former
+            // value, which avoids use of expensive atomic read-modify-write ops
+            superblock.store(0, Ordering::Relaxed);
+        }
+    }
 
-    /// Deallocate a set of blocks within a superblock
+    /// Atomically deallocate a subset of the blocks within a superblock
     ///
     /// This operation has `Relaxed` memory ordering and must be preceded by an
     /// `Acquire` memory barrier in order to avoid deallocation being reordered
@@ -409,17 +410,19 @@ impl Allocator {
         debug_assert!(local_len < (Self::blocks_per_superblock() - local_start_idx),
                       "Allocation end is out of superblock range");
 
-        // Compute the bit pattern to be zeroed out in the superblock...
+        // Compute the bit pattern to be zeroed out in the superblock
         let allocation_mask = Self::allocation_mask(local_start_idx, local_len);
 
-        // ...and clear those bits.
-        let old_bits = self.usage_bitmap[superblock_idx]
-                           .fetch_and(!allocation_mask, Ordering::Relaxed);
+        // ...and clear those bits via AND-NOT
+        let superblock = &self.usage_bitmap[superblock_idx];
+        let old_bits = superblock.fetch_and(!allocation_mask,
+                                            Ordering::Relaxed);
 
         // In debug builds, make sure that the corresponding blocks were
-        // indeed marked as allocated, as we did before.
+        // indeed marked as allocated (i.e. all bits in allocation mask were 1)
         debug_assert_eq!(old_bits & allocation_mask, allocation_mask,
-                         "Deallocated a block which was marked as free");
+                         "Deallocated blocks which were marked as free, \
+                          a double free or corruption most likely occured");
     }
 }
 
