@@ -457,8 +457,22 @@ impl Drop for Allocator {
 //       AllocatorBuilder can be made const fn, but people might still find it
 //       useful for certain use cases...
 //
-//       To allow this, do not use alloc(), dealloc(), alloc_zeroed() and
-//       realloc() in our main API, or if we do make them look like GlobalAlloc.
+//       To allow this, I must not use the names alloc(), dealloc(),
+//       alloc_zeroed() and realloc() in the inherente Allocator API.
+//
+//       GlobalAlloc methods must not unwind. Since pretty much everything can
+//       panic in Rust and I love assertions, I'll probably want to use
+//       catch_unwind, then return a null pointer if possible and call
+//       alloc::handle_alloc_error myself otherwise.
+//
+//       Obviously, GlobalAlloc layout expectations must also be upheld,
+//       including alignment. Until I support overaligned allocations (if ever),
+//       this will entail erroring out when requested alignment is higher than
+//       global block alignment.
+//
+//       If I do this, I should mention it in the crate documentation, along
+//       with the fact that it's only suitable for specific use cases (due to
+//       limited capacity, and possibly no overalignment ability)
 
 
 #[cfg(test)]
