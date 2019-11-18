@@ -318,8 +318,8 @@ impl Allocator {
                     .min(end_block_idx - start_block_idx);
 
             // ...compute the corresponding bit pattern to be zeroed out...
-            let allocation_mask =
-                ((1 << num_head_blocks) - 1) << local_start_idx;
+            let allocation_mask = Self::allocation_mask(local_start_idx,
+                                                        num_head_blocks);
 
             // ...and clear those bits. As a reminder, required memory ordering
             // on bitmap operations is enforced by the Release fence above.
@@ -358,11 +358,14 @@ impl Allocator {
             // expected, otherwise some double free or corruption occured.
             if cfg!(debug_assertions) {
                 debug_assert_eq!(
-                    superblock.swap(0, Ordering::Relaxed), std::usize::MAX,
+                    superblock.swap(Self::EMPTY_SUPERBLOCK_MASK,
+                                    Ordering::Relaxed),
+                    Self::FULL_SUPERBLOCK_MASK,
                     "Deallocated a superblock which was marked partially free"
                 );
             } else {
-                superblock.store(0, Ordering::Relaxed);
+                superblock.store(Self::EMPTY_SUPERBLOCK_MASK,
+                                 Ordering::Relaxed);
             }
         }
 
@@ -374,7 +377,7 @@ impl Allocator {
         let num_tail_blocks = end_block_idx - start_block_idx;
 
         // Compute the bit pattern to be zeroed out in that superblock...
-        let allocation_mask = (1 << num_tail_blocks) - 1;
+        let allocation_mask = Self::allocation_mask(0, num_tail_blocks);
 
         // ...and clear those bits.
         let old_bits = self.usage_bitmap[tail_superblock_idx]
@@ -385,6 +388,25 @@ impl Allocator {
         debug_assert_eq!(old_bits & allocation_mask, allocation_mask,
                          "Deallocated a tail block which was marked as free");
     }
+
+    /// Bit pattern for allocating within a superblock
+    ///
+    /// Computes a superblock bitmask of the form 0b001111110000..., which can
+    /// be used for targeting a subset of blocks within a superblock for
+    /// allocation and deallocation.
+    fn allocation_mask(start: usize, len: usize) -> usize {
+        debug_assert!(start < Self::blocks_per_superblock(),
+                      "Allocation mask start is out of superblock bounds");
+        debug_assert!(len < (Self::blocks_per_superblock() - start),
+                      "Allocation mask end is out of superblock bounds");
+        ((1 << len) - 1) << start
+    }
+
+    /// Bit pattern covering no blocks in a superblock
+    const EMPTY_SUPERBLOCK_MASK: usize = 0;
+
+    /// Bit pattern covering a full superblock
+    const FULL_SUPERBLOCK_MASK: usize = std::usize::MAX;
 }
 
 impl Drop for Allocator {
