@@ -241,7 +241,13 @@ impl Allocator {
     //       by accepting `std::alloc::Layout`. Initially, we can just return
     //       None when the requested alignment is higher than self.alignment.
     pub fn alloc_unbound(&self, size: usize) -> Option<NonNull<[MaybeUninit<u8>]>> {
+        // Detect and report unrealistic requests in debug builds
+        debug_assert!(size < self.capacity(),
+                      "Requested allocation size is above allocator capacity");
+
         // Handle the zero-sized edge case
+        // TODO: Decide if this code is needed by studying how well the general
+        //       algorithm would handle this edge case
         if size == 0 {
             return Some(
                 // This is safe because...
@@ -257,7 +263,38 @@ impl Allocator {
             );
         }
 
-        // TODO: Now handle serious allocations
+        // Convert requested size to a number of requested blocks
+        let num_blocks =
+            size / Self::blocks_per_superblock()
+                 + (size % Self::blocks_per_superblock() != 0) as usize;
+
+        // Determine how many complete superblocks must be allocated at minimum.
+        // If we denote N = Self::blocks_per_superblock() and use "SB" as a
+        // shorthand for superblock, the following schematics of possible
+        // allocation patterns should help you see what's going on:
+        //
+        // From 0 to N-1, 1 partial SB is OK: |0000| -> |1110|
+        // From N to 2*N-2, 2 partial SBs are OK: |0111|1000| -> |0111|1110|
+        // At 2*N-1 blocks, need 1 full SB and N-1 other blocks: |1111|1110|
+        // Every N blocks after that, need one more full SB: |1111|1111|1110|
+        //
+        let num_superblocks =
+            num_blocks.saturating_sub(Self::blocks_per_superblock() - 1)
+                      / Self::blocks_per_superblock();
+        let remaining_blocks =
+            num_blocks - num_superblocks * Self::blocks_per_superblock();
+
+        // TODO: Finish this. Next step is to scan through the superblock list,
+        //       for a sequence of num_superblocks contiguous free superblocks.
+        // NOTE: Do **not** use the greedy superblock overallocation strategy
+        //       that was initially envisioned, as this will lead to bad
+        //       allocator storage fragmentation: |1000|1000|1000|1000|...
+        // NOTE: Keep number of atomic operations to a minimum, even Relaxed ops
+        //       because LLVM is downright terrible at optimizing them. Cache
+        //       useful results of Relaxed loads instead of reloading.
+        // NOTE: Consider keeping a state variable to avoid always scanning from
+        //       0 onwards in the bitmap, instead starting where previous thread
+        //       left off to get a ring buffer-ish pattern.
         unimplemented!()
     }
 
