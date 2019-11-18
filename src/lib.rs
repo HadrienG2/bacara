@@ -317,23 +317,12 @@ impl Allocator {
                 (Self::blocks_per_superblock() - local_start_idx)
                     .min(end_block_idx - start_block_idx);
 
-            // ...compute the corresponding bit pattern to be zeroed out...
-            let allocation_mask = Self::allocation_mask(local_start_idx,
-                                                        num_head_blocks);
-
-            // ...and clear those bits. As a reminder, required memory ordering
-            // on bitmap operations is enforced by the Release fence above.
+            // ...and deallocate those blocks.
             let head_superblock_idx =
                 start_block_idx / Self::blocks_per_superblock();
-            let old_bits = self.usage_bitmap[head_superblock_idx]
-                               .fetch_and(!allocation_mask, Ordering::Relaxed);
-
-            // In debug builds, make sure that the corresponding blocks were
-            // indeed marked as allocated.
-            debug_assert_eq!(
-                old_bits & allocation_mask, allocation_mask,
-                "Deallocated a head block which was marked as free"
-            );
+            self.dealloc_blocks(head_superblock_idx,
+                                local_start_idx,
+                                num_head_blocks);
 
             // ...and now we can move forward in the buffer deallocation process
             start_block_idx += num_head_blocks;
@@ -375,18 +364,7 @@ impl Allocator {
 
         // Otherwise, our buffer ends in the middle of a superblock
         let num_tail_blocks = end_block_idx - start_block_idx;
-
-        // Compute the bit pattern to be zeroed out in that superblock...
-        let allocation_mask = Self::allocation_mask(0, num_tail_blocks);
-
-        // ...and clear those bits.
-        let old_bits = self.usage_bitmap[tail_superblock_idx]
-                           .fetch_and(!allocation_mask, Ordering::Relaxed);
-
-        // In debug builds, make sure that the corresponding blocks were
-        // indeed marked as allocated, as we did before.
-        debug_assert_eq!(old_bits & allocation_mask, allocation_mask,
-                         "Deallocated a tail block which was marked as free");
+        self.dealloc_blocks(tail_superblock_idx, 0, num_tail_blocks);
     }
 
     /// Bit pattern for allocating within a superblock
@@ -395,10 +373,16 @@ impl Allocator {
     /// be used for targeting a subset of blocks within a superblock for
     /// allocation and deallocation.
     fn allocation_mask(start: usize, len: usize) -> usize {
+        // Check interface preconditions in debug builds
         debug_assert!(start < Self::blocks_per_superblock(),
-                      "Allocation mask start is out of superblock bounds");
+                      "Allocation mask start is out of superblock range");
         debug_assert!(len < (Self::blocks_per_superblock() - start),
-                      "Allocation mask end is out of superblock bounds");
+                      "Allocation mask end is out of superblock range");
+
+        // Handle the "full superblock" edge case without overflowing
+        if len == Self::blocks_per_superblock() { return std::usize::MAX; }
+
+        // Otherwise, use a general bit pattern computation
         ((1 << len) - 1) << start
     }
 
@@ -407,6 +391,36 @@ impl Allocator {
 
     /// Bit pattern covering a full superblock
     const FULL_SUPERBLOCK_MASK: usize = std::usize::MAX;
+
+    /// Deallocate a set of blocks within a superblock
+    ///
+    /// This operation has `Relaxed` memory ordering and must be preceded by an
+    /// `Acquire` memory barrier in order to avoid deallocation being reordered
+    /// before usage of the memory block by the compiler or CPU.
+    fn dealloc_blocks(&self,
+                      superblock_idx: usize,
+                      local_start_idx: usize,
+                      local_len: usize) {
+        // Check interface preconditions in debug builds
+        debug_assert!(superblock_idx < self.usage_bitmap.len(),
+                      "Superblock index is out of bitmap range");
+        debug_assert!(local_start_idx < Self::blocks_per_superblock(),
+                      "Allocation start is out of superblock range");
+        debug_assert!(local_len < (Self::blocks_per_superblock() - local_start_idx),
+                      "Allocation end is out of superblock range");
+
+        // Compute the bit pattern to be zeroed out in the superblock...
+        let allocation_mask = Self::allocation_mask(local_start_idx, local_len);
+
+        // ...and clear those bits.
+        let old_bits = self.usage_bitmap[superblock_idx]
+                           .fetch_and(!allocation_mask, Ordering::Relaxed);
+
+        // In debug builds, make sure that the corresponding blocks were
+        // indeed marked as allocated, as we did before.
+        debug_assert_eq!(old_bits & allocation_mask, allocation_mask,
+                         "Deallocated a block which was marked as free");
+    }
 }
 
 impl Drop for Allocator {
