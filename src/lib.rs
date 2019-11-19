@@ -295,6 +295,7 @@ impl Allocator {
         // NOTE: Consider keeping a state variable to avoid always scanning from
         //       0 onwards in the bitmap, instead starting where previous thread
         //       left off to get a ring buffer-ish pattern.
+        // NOTE: Make sure to return a slice of the requested size
         unimplemented!()
     }
 
@@ -326,8 +327,8 @@ impl Allocator {
         let ptr_len = ptr.as_ref().len();
         debug_assert!(ptr_len < self.capacity() - ptr_offset,
                       "Deallocated ptr overflows backing store");
-        debug_assert_eq!(ptr_len % self.block_size(), 0,
-                         "Deallocated ptr doesn't stop on a block boundary");
+        // NOTE: ptr_len may not be a multiple of the block size because we
+        //       allow users to under-allocate blocks
 
         // Do not do anything beyond that for zero-sized allocations, by
         // definition they have no associated storage block to be freed
@@ -341,7 +342,10 @@ impl Allocator {
 
         // Switch to block coordinates as that's what our bitmap speaks
         let mut block_idx = ptr_offset / self.block_size();
-        let end_block_idx = block_idx + (ptr_len / self.block_size());
+        let end_block_idx =
+            block_idx
+                + (ptr_len / self.block_size())
+                + (ptr_len % self.block_size() != 0) as usize;
 
         // Does our first block fall in the middle of a superblock?
         let local_start_idx = block_idx % Self::blocks_per_superblock();
