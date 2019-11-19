@@ -282,6 +282,14 @@ impl Allocator {
         //       thread left off. That variable does not need to be consistent,
         //       it's just an optimization, so loads and stores are enough.
         //
+        //       Make sure not to update this variable early on durign search,
+        //       without going O(N), to avoid increasing the odd of an
+        //       allocation race between two threads by accidentally hinting
+        //       other threads to search where we're currently allocating. An
+        //       alternate way to avoid this would be to start search at a
+        //       random point in the usage bitmap, but that will have bad
+        //       fragmentation behavior.
+        //
         //       Bear in mind that this will require some modulo arith instead
         //       of plain superblock index addition and subtraction. Also, the
         //       range of superblocks that we're looking for may straddle the
@@ -309,7 +317,6 @@ impl Allocator {
                         .enumerate()
                 {
                     // Fully allocate current superblock, if it's still free
-                    // TODO: Extract into a method
                     let old_val =
                         target_superblock.compare_and_swap(0,
                                                            std::usize::MAX,
@@ -334,9 +341,16 @@ impl Allocator {
                 }
 
                 // TODO: Try to allocate neighboring blocks, searching for all
-                //       acceptable bit patterns. Bear in mind that
-                //       num_superblocks == 0 is a special case that allows more
-                //       bit patterns.
+                //       acceptable bit patterns with `remaining_blocks` bits.
+                //
+                //       Bear in mind that num_superblocks == 0 is a special
+                //       case that allows more bit patterns (no need to touch
+                //       edge of previously allocated superblocks).
+                //
+                //       Bear in mind that superblock_idx == 0 and
+                //       usage_bitmap.len() will require special handling as
+                //       there is no preceding/following neighbor.
+                //
                 //       Do not forget to rollback superblock allocations and
                 //       increment first_free_superblock_idx on failure.
                 unimplemented!()
@@ -351,7 +365,8 @@ impl Allocator {
         }
 
         // TODO: Handle case where last free superblock is at end of the loop,
-        //       will require extracting allocation logic to avoid duplication
+        //       will require extracting above allocation logic into a function
+        //       or closure to avoid duplicating it
 
         // Make sure that the previous writes to the allocation bitmap are
         // ordered before any subsequent access to the buffer by the current
@@ -416,8 +431,8 @@ impl Allocator {
 
         // Switch to block coordinates as that's what our bitmap speaks
         let mut block_idx = ptr_offset / self.block_size();
-        let end_block_idx =
-            block_idx + div_round_up(ptr_len, self.block_size());
+        let end_block_idx = block_idx + div_round_up(ptr_len,
+                                                     self.block_size());
 
         // Does our first block fall in the middle of a superblock?
         let local_start_idx = block_idx % Self::blocks_per_superblock();
