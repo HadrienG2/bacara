@@ -122,7 +122,8 @@ impl Allocator {
     ///
     /// The block_align, block_size and capacity parameters may be assumed to
     /// uphold all the preconditions listed as "must" bullet points in the
-    /// corresponding `AllocatorBuilder` struct members' documentation.
+    /// corresponding `AllocatorBuilder` struct members' documentation, either
+    /// in this constructor or other methods of Allocator.
     pub(crate) unsafe fn new_unchecked(block_align: usize,
                                        block_size: usize,
                                        capacity: usize) -> Self {
@@ -162,10 +163,6 @@ impl Allocator {
     /// size and its superblock size. That quantity is machine-dependent and
     /// subjected to change in future versions of this crate, so please always
     /// call this function instead of relying on past results from it.
-    //
-    // NOTE: This function must be inlined as it's super-important that the
-    //       compiler knows that its output is a power of 2 for fast div/rem.
-    #[inline(always)]
     pub const fn blocks_per_superblock() -> usize {
         mem::size_of::<usize>() * 8
     }
@@ -174,10 +171,6 @@ impl Allocator {
     ///
     /// This is the granularity at which the allocator's internal bitmap tracks
     /// which regions of the backing store are used and unused.
-    //
-    // NOTE: This function must be inlined as it's super-important that the
-    //       compiler knows that its output is a power of 2 for fast div/rem.
-    #[inline(always)]
     const fn block_size(&self) -> usize {
         1 << (self.block_size_shift as usize)
     }
@@ -186,10 +179,6 @@ impl Allocator {
     ///
     /// This is the allocation granularity at which this allocator should
     /// exhibit optimal CPU performance.
-    //
-    // NOTE: This function must be inlined as it's super-important that the
-    //       compiler knows that its output is a power of 2 for fast div/rem.
-    #[inline(always)]
     const fn superblock_size(&self) -> usize {
         self.block_size() * Self::blocks_per_superblock()
     }
@@ -559,10 +548,6 @@ impl Drop for Allocator {
 
 
 /// Small utility to divide two integers, rounding the result up
-//
-// NOTE: It is very important that this be inlined in order to get power-of-two
-//       division and modulo optimizations where applicable.
-#[inline(always)]
 fn div_round_up(x: usize, y: usize) -> usize {
     // Check interface preconditions in debug builds
     debug_assert!(y != 0, "Attempted to divide by zero");
@@ -584,3 +569,7 @@ mod tests {
 }
 
 // TODO: Benchmark at various block sizes and show a graph on README
+//
+// TODO: Look at assembly and make sure that power-of-two integer manipulation
+//       are properly optimized, force inlining of Allocator size queries and
+//       div_round_up if necessary.
