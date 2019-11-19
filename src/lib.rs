@@ -352,7 +352,9 @@ impl Allocator {
                 //       there is no preceding/following neighbor.
                 //
                 //       Do not forget to rollback superblock allocations and
-                //       increment first_free_superblock_idx on failure.
+                //       increment first_free_superblock_idx on failure. I
+                //       wonder if it would be a good idea to handle those
+                //       rollbacks using some sort of RAII object?
                 unimplemented!()
             } else {
                 // We need more free superblocks, is the current one free?
