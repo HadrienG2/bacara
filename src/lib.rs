@@ -268,9 +268,7 @@ impl Allocator {
         }
 
         // Convert requested size to a number of requested blocks
-        let num_blocks =
-            size / Self::blocks_per_superblock()
-                 + (size % Self::blocks_per_superblock() != 0) as usize;
+        let num_blocks = div_round_up(size, Self::blocks_per_superblock());
 
         // Determine how many complete superblocks must be allocated at minimum.
         // If we denote N = Self::blocks_per_superblock() and use "SB" as a
@@ -389,9 +387,7 @@ impl Allocator {
         // Switch to block coordinates as that's what our bitmap speaks
         let mut block_idx = ptr_offset / self.block_size();
         let end_block_idx =
-            block_idx
-                + (ptr_len / self.block_size())
-                + (ptr_len % self.block_size() != 0) as usize;
+            block_idx + div_round_up(ptr_len, self.block_size());
 
         // Does our first block fall in the middle of a superblock?
         let local_start_idx = block_idx % Self::blocks_per_superblock();
@@ -560,6 +556,20 @@ impl Drop for Allocator {
 //       If I do this, I should mention it in the crate documentation, along
 //       with the fact that it's only suitable for specific use cases (due to
 //       limited capacity, and possibly no overalignment ability)
+
+
+/// Small utility to divide two integers, rounding the result up
+//
+// NOTE: It is very important that this be inlined in order to get power-of-two
+//       division and modulo optimizations where applicable.
+#[inline(always)]
+fn div_round_up(x: usize, y: usize) -> usize {
+    // Check interface preconditions in debug builds
+    debug_assert!(y != 0, "Attempted to divide by zero");
+
+    // Return rounded division result
+    (x / y) + (x % y != 0) as usize
+}
 
 
 #[cfg(test)]
