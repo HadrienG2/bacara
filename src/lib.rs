@@ -243,11 +243,15 @@ impl Allocator {
     pub fn alloc_unbound(&self, size: usize) -> Option<NonNull<[MaybeUninit<u8>]>> {
         // Detect and report unrealistic requests in debug builds
         debug_assert!(size < self.capacity(),
-                      "Requested allocation size is above allocator capacity");
+                      "Requested size is above allocator capacity");
 
         // Handle the zero-sized edge case
+        //
         // TODO: Decide if this code is needed by studying how well the general
         //       algorithm would handle this edge case
+        //
+        // TODO: In general, go through the code once finished and try to
+        //       simplify and deduplicate it as done for `dealloc_unbound()`.
         if size == 0 {
             return Some(
                 // This is safe because...
@@ -284,18 +288,60 @@ impl Allocator {
         let remaining_blocks =
             num_blocks - num_superblocks * Self::blocks_per_superblock();
 
-        // TODO: Finish this. Next step is to scan through the superblock list,
-        //       for a sequence of num_superblocks contiguous free superblocks.
+        // Look for that number of completely free supeblocks
+        //
+        // TODO: Use a state variable to avoid always scanning through the
+        //       superblock list from 0, instead picking up where the previous
+        //       thread left off. That variable does not need to be consistent,
+        //       it's just an optimization, so loads and stores are enough.
+        //
+        //       Bear in mind that this will require some modulo arith instead
+        //       of plain superblock index addition and subtraction. Also, the
+        //       range of superblocks that we're looking for may straddle the
+        //       boundary between the first superblock we'll be looking at and
+        //       the last one.
+        //
+        //       This should wait on validity-checking tests, and on benchmarks
+        //       to study the impact and see if the complexity is worth it.
+        let mut first_free_superblock_idx = 0;
+        for (superblock_idx, superblock) in self.usage_bitmap.iter().enumerate()
+        {
+            // Have we found the right amount of free superblocks already?
+            // (can succeed on first iteration if none are needed)
+            if superblock_idx - first_free_superblock_idx == num_superblocks {
+                // TODO: Try to allocate those superblocks. Rollback, update
+                //       first_free_superblock_idx and resume search on failure
+                // TODO: Try to allocate neighboring blocks, searching for all
+                //       acceptable bit patterns. Bear in mind that
+                //       num_superblocks == 0 is a special case that allows more
+                //       bit patterns.
+                unimplemented!()
+            } else {
+                // We need more free superblocks, is the current one free?
+                if superblock.load(Ordering::Relaxed) != 0 {
+                    // If not, restart superblock search at the next loop index
+                    first_free_superblock_idx = superblock_idx+1;
+                }
+            }
+        }
+
+        // Make sure that the previous writes to the allocation bitmap are
+        // ordered before any subsequent access to the buffer by the current
+        // thread, to avoid data races with the thread that deallocated the
+        // memory that we are in the process of allocating.
+        atomic::fence(Ordering::Acquire);
+
+        // TODO: Construct output pointer
         // NOTE: Do **not** use the greedy superblock overallocation strategy
         //       that was initially envisioned, as this will lead to bad
-        //       allocator storage fragmentation: |1000|1000|1000|1000|...
+        //       allocator storage fragmentation if many small allocations are
+        //       carried out (|1000|1000|1000|1000|...), which can make
+        //       subsequent large allocations fail systematically.
         // NOTE: Keep number of atomic operations to a minimum, even Relaxed ops
         //       because LLVM is downright terrible at optimizing them. Cache
         //       useful results of Relaxed loads instead of reloading.
-        // NOTE: Consider keeping a state variable to avoid always scanning from
-        //       0 onwards in the bitmap, instead starting where previous thread
-        //       left off to get a ring buffer-ish pattern.
-        // NOTE: Make sure to return a slice of the requested size
+        // NOTE: Make sure to return a slice of the requested size, even if it
+        //       is not a multiple of the block size.
         unimplemented!()
     }
 
@@ -393,9 +439,9 @@ impl Allocator {
     fn allocation_mask(start: usize, len: usize) -> usize {
         // Check interface preconditions in debug builds
         debug_assert!(start < Self::blocks_per_superblock(),
-                      "Allocation mask start is out of superblock range");
+                      "Allocation start is out of superblock range");
         debug_assert!(len < (Self::blocks_per_superblock() - start),
-                      "Allocation mask end is out of superblock range");
+                      "Allocation end is out of superblock range");
 
         // Handle the "full superblock" edge case without overflowing
         if len == Self::blocks_per_superblock() { return std::usize::MAX; }
