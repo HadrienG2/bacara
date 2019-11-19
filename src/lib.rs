@@ -368,6 +368,8 @@ impl Allocator {
         //       will require extracting above allocation logic into a function
         //       or closure to avoid duplicating it
 
+        // TODO: Handle the case where we failed to allocate, exiting here
+
         // Make sure that the previous writes to the allocation bitmap are
         // ordered before any subsequent access to the buffer by the current
         // thread, to avoid data races with the thread that deallocated the
@@ -375,11 +377,6 @@ impl Allocator {
         atomic::fence(Ordering::Acquire);
 
         // TODO: Construct output pointer
-        // NOTE: Do **not** use the greedy superblock overallocation strategy
-        //       that was initially envisioned, as this will lead to bad
-        //       allocator storage fragmentation if many small allocations are
-        //       carried out (|1000|1000|1000|1000|...), which can make
-        //       subsequent large allocations fail systematically.
         // NOTE: Keep number of atomic operations to a minimum, even Relaxed ops
         //       because LLVM is downright terrible at optimizing them. Cache
         //       useful results of Relaxed loads instead of reloading.
