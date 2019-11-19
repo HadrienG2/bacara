@@ -310,7 +310,7 @@ impl Allocator {
             // (can succeed on first iteration if none are needed)
             if superblock_idx - first_superblock_idx == num_superblocks {
                 // Try to allocate these superblocks
-                // TODO: Can be extracted into a method
+                // TODO: Replace with AllocTransaction API once ready
                 for (target_superblock_idx, target_superblock) in
                     self.usage_bitmap[first_superblock_idx..superblock_idx]
                         .iter()
@@ -446,7 +446,9 @@ impl Allocator {
                     .min(end_block_idx - block_idx);
 
             // Deallocate leading buffer blocks in this first superblock
-            self.dealloc_blocks(superblock_idx, local_start_idx, local_len);
+            self.dealloc_blocks(superblock_idx,
+                                Self::allocation_mask(local_start_idx,
+                                                      local_len));
 
             // Advance block pointer, stop if all blocks were liberated
             block_idx += local_len;
@@ -468,10 +470,11 @@ impl Allocator {
 
         // Deallocate trailing buffer blocks in the last superblock
         let remaining_len = end_block_idx - block_idx;
-        self.dealloc_blocks(end_superblock_idx, 0, remaining_len);
+        self.dealloc_blocks(end_superblock_idx,
+                            Self::allocation_mask(0, remaining_len));
     }
 
-    /// Bit pattern for (de)allocating within a superblock
+    /// Bit pattern for (de)allocating a subset of the blocks in a superblock
     ///
     /// Computes a superblock bitmask of the form 0b001111110000..., which can
     /// be used for targeting a subset of blocks within a superblock for
@@ -489,6 +492,11 @@ impl Allocator {
         // Otherwise, use a general bit pattern computation
         ((1 << len) - 1) << start
     }
+
+    // TODO: Provide an API which creates an AllocTransaction with a certain
+    //       body superblock range, or returns the index of the first superblock
+    //       that wasn't fully free (= 0) as an error.
+    //       It could be called try_alloc_superblocks() or something similar
 
     /// Atomically deallocate a full superblock
     ///
@@ -527,20 +535,19 @@ impl Allocator {
     /// before usage of the memory block by the compiler or CPU.
     fn dealloc_blocks(&self,
                       superblock_idx: usize,
-                      local_start_idx: usize,
-                      local_len: usize) {
+                      allocation_mask: usize) {
         // Check interface preconditions in debug builds
         debug_assert!(superblock_idx < self.usage_bitmap.len(),
                       "Superblock index is out of bitmap range");
-        debug_assert!(local_start_idx < Self::blocks_per_superblock(),
-                      "Allocation start is out of superblock range");
-        debug_assert!(local_len < (Self::blocks_per_superblock() - local_start_idx),
-                      "Allocation end is out of superblock range");
 
-        // Compute the bit pattern to be zeroed out in the superblock
-        let allocation_mask = Self::allocation_mask(local_start_idx, local_len);
+        // Check for silly behavior which may indicate a bug, as well
+        debug_assert!(allocation_mask != 0,
+                      "Useless call to dealloc_blocks with empty mask");
+        debug_assert!(allocation_mask != std::usize::MAX,
+                      "Inefficient call to dealloc_blocks with full mask, \
+                       you should probably be using dealloc_superblock");
 
-        // ...and clear those bits via AND-NOT
+        // Clear the requested allocation bits via AND-NOT
         let superblock = &self.usage_bitmap[superblock_idx];
         let old_bits = superblock.fetch_and(!allocation_mask,
                                             Ordering::Relaxed);
@@ -600,6 +607,63 @@ impl Drop for Allocator {
 //       If I do this, I should mention it in the crate documentation, along
 //       with the fact that it's only suitable for specific use cases (due to
 //       limited capacity, and possibly no overalignment ability)
+
+
+/// RAII guard to automatically rollback failed allocations
+///
+/// In this lock-free bitmap allocator, the process of allocating memory which
+/// spans more than one superblock isn't atomic, and may therefore fail _after_
+/// some memory has already been allocated. In that case, the previous partial
+/// memory allocation must be reverted.
+///
+/// This struct imposes some structure on the memory allocation process which
+/// allows this process to occur automatically.
+///
+/// In order to be memory-efficient and allocation-free, it exploits the fact
+/// that all allocations can be decomposed into at most a head, a body and a
+/// tail, where the head and tail superblocks are partially allocated and the
+/// body superblocks are fully allocated:
+///
+///     |0011|1111|1111|1111|1110|
+///      head <----body----> tail
+///
+struct AllocTransaction<'allocator> {
+    /// Bit pattern allocated at the head superblock, if any
+    head_allocation_mask: Option<usize>,
+
+    /// Index where the body superblock starts (inclusive)
+    body_start_idx: usize,
+
+    /// Index where the body superblock ends (exclusive)
+    body_end_idx: usize,
+
+    /// Bit pattern allocated at the tail superblock, if any
+    tail_allocation_mask: Option<usize>,
+
+    /// Back-reference to the host allocator
+    allocator: &'allocator Allocator,
+}
+
+// TODO: Implement main API
+
+impl<'allocator> Drop for AllocTransaction<'allocator> {
+    fn drop(&mut self) {
+        // Deallocate head blocks, if any
+        if let Some(head_mask) = self.head_allocation_mask {
+            self.allocator.dealloc_blocks(self.body_start_idx-1, head_mask);
+        }
+
+        // Deallocate fully allocated body superblocks, if any
+        for superblock_idx in self.body_start_idx..self.body_end_idx {
+            self.allocator.dealloc_superblock(superblock_idx);
+        }
+
+        // Deallocate tail blocks, if any
+        if let Some(tail_mask) = self.tail_allocation_mask {
+            self.allocator.dealloc_blocks(self.body_end_idx, tail_mask);
+        }
+    }
+}
 
 
 /// Small utility to divide two integers, rounding the result up
