@@ -290,27 +290,68 @@ impl Allocator {
         //
         //       This should wait on validity-checking tests, and on benchmarks
         //       to study the impact and see if the complexity is worth it.
-        let mut first_free_superblock_idx = 0;
-        for (superblock_idx, superblock) in self.usage_bitmap.iter().enumerate()
+        //
+        // This variable tracks our knowledge of the first superblock which
+        // _might_ be the beginning of a continuous free superblock sequence,
+        // bearing in mind that we haven't checked the current superblock.
+        let mut first_superblock_idx = 0;
+        'sb_search: for (superblock_idx, superblock) in
+            self.usage_bitmap.iter().enumerate()
         {
             // Have we found the right amount of free superblocks already?
             // (can succeed on first iteration if none are needed)
-            if superblock_idx - first_free_superblock_idx == num_superblocks {
-                // TODO: Try to allocate those superblocks. Rollback, update
-                //       first_free_superblock_idx and resume search on failure
+            if superblock_idx - first_superblock_idx == num_superblocks {
+                // Try to allocate these superblocks
+                // TODO: Can be extracted into a method
+                for (target_superblock_idx, target_superblock) in
+                    self.usage_bitmap[first_superblock_idx..superblock_idx]
+                        .iter()
+                        .enumerate()
+                {
+                    // Fully allocate current superblock, if it's still free
+                    // TODO: Extract into a method
+                    let old_val =
+                        target_superblock.compare_and_swap(0,
+                                                           std::usize::MAX,
+                                                           Ordering::Relaxed);
+
+                    // If someone else allocated this superblock...
+                    if old_val != 0 {
+                        // Rollback previous allocations
+                        for allocated_superblock in
+                            &self.usage_bitmap[first_superblock_idx..target_superblock_idx]
+                        {
+                            allocated_superblock.store(0, Ordering::Relaxed);
+                        }
+
+                        // Update our knowledge of the first superblock that
+                        // (might) be available for allocation
+                        first_superblock_idx = target_superblock_idx + 1;
+
+                        // Resume search for free superblocks
+                        continue 'sb_search;
+                    }
+                }
+
                 // TODO: Try to allocate neighboring blocks, searching for all
                 //       acceptable bit patterns. Bear in mind that
                 //       num_superblocks == 0 is a special case that allows more
                 //       bit patterns.
+                //       Do not forget to rollback superblock allocations and
+                //       increment first_free_superblock_idx on failure.
                 unimplemented!()
             } else {
                 // We need more free superblocks, is the current one free?
+                // TODO: Extract into a method
                 if superblock.load(Ordering::Relaxed) != 0 {
                     // If not, restart superblock search at the next loop index
-                    first_free_superblock_idx = superblock_idx+1;
+                    first_superblock_idx = superblock_idx + 1;
                 }
             }
         }
+
+        // TODO: Handle case where last free superblock is at end of the loop,
+        //       will require extracting allocation logic to avoid duplication
 
         // Make sure that the previous writes to the allocation bitmap are
         // ordered before any subsequent access to the buffer by the current
