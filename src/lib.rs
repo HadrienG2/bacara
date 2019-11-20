@@ -617,27 +617,27 @@ impl Drop for Allocator {
 /// memory allocation must be reverted.
 ///
 /// This struct imposes some structure on the memory allocation process which
-/// allows this process to occur automatically.
+/// allows this transaction rollback process to occur automatically.
 ///
 /// In order to be memory-efficient and allocation-free, it exploits the fact
 /// that all allocations can be decomposed into at most a head, a body and a
 /// tail, where the head and tail superblocks are partially allocated and the
 /// body superblocks are fully allocated:
 ///
-///     |0011|1111|1111|1111|1110|
+///     |0011|1111|1111|1111|1000|
 ///      head <----body----> tail
 ///
 struct AllocTransaction<'allocator> {
-    /// Bit pattern allocated at the head superblock, if any
+    /// Bit pattern allocated in "head" superblock @ body_start_idx-1, if any
     head_allocation_mask: Option<usize>,
 
-    /// Index where the body superblock starts (inclusive)
+    /// Start index of fully allocated "body" superblock sequence (inclusive)
     body_start_idx: usize,
 
-    /// Index where the body superblock ends (exclusive)
+    /// End index of fully allocated "body" superblock sequence (exclusive)
     body_end_idx: usize,
 
-    /// Bit pattern allocated at the tail superblock, if any
+    /// Bit pattern allocated in "tail" superblock @ body_end_idx, if any
     tail_allocation_mask: Option<usize>,
 
     /// Back-reference to the host allocator
@@ -653,7 +653,7 @@ impl<'allocator> Drop for AllocTransaction<'allocator> {
             self.allocator.dealloc_blocks(self.body_start_idx-1, head_mask);
         }
 
-        // Deallocate fully allocated body superblocks, if any
+        // Deallocate fully allocated body superblocks
         for superblock_idx in self.body_start_idx..self.body_end_idx {
             self.allocator.dealloc_superblock(superblock_idx);
         }
