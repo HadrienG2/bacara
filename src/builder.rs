@@ -49,7 +49,7 @@ impl AllocatorBuilder {
     ///
     /// Alignment must be a power of 2, and will be set to 1 (byte alignment)
     /// by default if left unspecified.
-    pub fn alignment(mut self, align: usize) -> Self {
+    pub fn alignment(&mut self, align: usize) -> &mut Self {
         // NOTE: Being a power of 2 implies being nonzero
         assert!(align.is_power_of_two(), "Alignment must be a power of 2");
         assert!(self.block_align.replace(align).is_none(),
@@ -66,7 +66,7 @@ impl AllocatorBuilder {
     /// The block size must be a multiple of the alignment and a power of 2.
     ///
     /// You must set either the block size and superblock size, but not both.
-    pub fn block_size(mut self, block_size: usize) -> Self {
+    pub fn block_size(&mut self, block_size: usize) -> &mut Self {
         assert!(block_size.is_power_of_two(),
                 "Block size must be a power of 2");
         assert!(self.block_size.replace(block_size).is_none(),
@@ -84,7 +84,7 @@ impl AllocatorBuilder {
     /// `Allocator::blocks_per_superblock()`, and a power of 2.
     ///
     /// You must set either the block size and superblock size, but not both.
-    pub fn superblock_size(self, superblock_size: usize) -> Self {
+    pub fn superblock_size(&mut self, superblock_size: usize) -> &mut Self {
         assert_eq!(superblock_size % Allocator::blocks_per_superblock(), 0,
                    "Superblock size must be a multiple of \
                     Allocator::blocks_per_superblock()");
@@ -106,7 +106,7 @@ impl AllocatorBuilder {
     /// The backing store capacity must not be zero, and the aforementioned
     /// rounding should not result in the requested capacity going above
     /// the `usize::MAX` limit.
-    pub fn capacity(mut self, capacity: usize) -> Self {
+    pub fn capacity(&mut self, capacity: usize) -> &mut Self {
         assert!(capacity != 0, "Backing store capacity must not be zero");
         assert!(self.capacity.replace(capacity).is_none(),
                 "Backing store capacity must only be set once");
@@ -117,7 +117,7 @@ impl AllocatorBuilder {
     ///
     /// You must have configured at least a block size and a backing store
     /// capacity before calling this function.
-    pub fn build(self) -> Allocator {
+    pub fn build(&self) -> Allocator {
         // Select block alignment (which will be the backing store alignment)
         let block_align = self.block_align.unwrap_or(1);
 
