@@ -52,6 +52,9 @@
 //! FIXME: Oh yes I do need those, but API must be done first ;)
 
 pub mod builder;
+mod mask;
+
+use crate::mask::AllocationMask;
 
 use std::{
     alloc::{self, Layout},
@@ -447,8 +450,8 @@ impl Allocator {
 
             // Deallocate leading buffer blocks in this first superblock
             self.dealloc_blocks(superblock_idx,
-                                Self::allocation_mask(local_start_idx,
-                                                      local_len));
+                                AllocationMask::new(local_start_idx,
+                                                    local_len));
 
             // Advance block pointer, stop if all blocks were liberated
             block_idx += local_len;
@@ -471,26 +474,7 @@ impl Allocator {
         // Deallocate trailing buffer blocks in the last superblock
         let remaining_len = end_block_idx - block_idx;
         self.dealloc_blocks(end_superblock_idx,
-                            Self::allocation_mask(0, remaining_len));
-    }
-
-    /// Bit pattern for (de)allocating a subset of the blocks in a superblock
-    ///
-    /// Computes a superblock bitmask of the form 0b001111110000..., which can
-    /// be used for targeting a subset of blocks within a superblock for
-    /// allocation and deallocation.
-    fn allocation_mask(start: usize, len: usize) -> usize {
-        // Check interface preconditions in debug builds
-        debug_assert!(start < Self::blocks_per_superblock(),
-                      "Allocation start is out of superblock range");
-        debug_assert!(len < (Self::blocks_per_superblock() - start),
-                      "Allocation end is out of superblock range");
-
-        // Handle the "full superblock" edge case without overflowing
-        if len == Self::blocks_per_superblock() { return std::usize::MAX; }
-
-        // Otherwise, use a general bit pattern computation
-        ((1 << len) - 1) << start
+                            AllocationMask::new(0, remaining_len));
     }
 
     // TODO: Provide an API which creates an AllocTransaction with a certain
@@ -535,17 +519,18 @@ impl Allocator {
     /// before usage of the memory block by the compiler or CPU.
     fn dealloc_blocks(&self,
                       superblock_idx: usize,
-                      allocation_mask: usize) {
+                      mask: AllocationMask) {
         // Check interface preconditions in debug builds
         debug_assert!(superblock_idx < self.usage_bitmap.len(),
                       "Superblock index is out of bitmap range");
 
         // Check for silly behavior which may indicate a bug, as well
-        debug_assert!(allocation_mask != 0,
+        debug_assert!(!mask.empty(),
                       "Useless call to dealloc_blocks with empty mask");
-        debug_assert!(allocation_mask != std::usize::MAX,
+        debug_assert!(!mask.full(),
                       "Inefficient call to dealloc_blocks with full mask, \
                        you should probably be using dealloc_superblock");
+        let allocation_mask: usize = mask.into();
 
         // Clear the requested allocation bits via AND-NOT
         let superblock = &self.usage_bitmap[superblock_idx];
@@ -629,7 +614,7 @@ impl Drop for Allocator {
 ///
 struct AllocTransaction<'allocator> {
     /// Bit pattern allocated in "head" superblock @ body_start_idx-1, if any
-    head_allocation_mask: Option<usize>,
+    head_allocation_mask: Option<AllocationMask>,
 
     /// Start index of fully allocated "body" superblock sequence (inclusive)
     body_start_idx: usize,
@@ -638,7 +623,7 @@ struct AllocTransaction<'allocator> {
     body_end_idx: usize,
 
     /// Bit pattern allocated in "tail" superblock @ body_end_idx, if any
-    tail_allocation_mask: Option<usize>,
+    tail_allocation_mask: Option<AllocationMask>,
 
     /// Back-reference to the host allocator
     allocator: &'allocator Allocator,
