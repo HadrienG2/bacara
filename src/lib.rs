@@ -482,10 +482,76 @@ impl Allocator {
     //       that wasn't fully free (= 0) as an error.
     //       It could be called try_alloc_superblocks() or something similar
 
+    /// Try to atomically allocate a full superblock
+    ///
+    /// Returns observed superblock allocation bitfield on failure.
+    ///
+    /// This operation has `Relaxed` memory ordering and must be followed by an
+    /// `Acquire` memory barrier in order to avoid allocation being reordered
+    /// after usage of the memory block by the compiler or CPU.
+    fn try_alloc_superblock(&self, superblock_idx: usize) -> Result<(), usize> {
+        // Check interface preconditions in debug builds
+        debug_assert!(superblock_idx < self.usage_bitmap.len(),
+                      "Superblock index is out of bitmap range");
+
+        // The superblock should initially be fully free
+        self.usage_bitmap[superblock_idx]
+            .compare_exchange(0,
+                              std::usize::MAX,
+                              Ordering::Relaxed,
+                              Ordering::Relaxed)
+            .map(std::mem::drop)
+    }
+
+    /// Try to atomically allocate a subset of the blocks within a superblock
+    ///
+    /// Returns observed superblock allocation bitfield on failure.
+    ///
+    /// This operation has `Relaxed` memory ordering and must be followed by an
+    /// `Acquire` memory barrier in order to avoid allocation being reordered
+    /// after usage of the memory block by the compiler or CPU.
+    fn try_alloc_blocks(&self,
+                        superblock_idx: usize,
+                        mask: AllocationMask) -> Result<(), usize> {
+        // Check interface preconditions in debug builds
+        debug_assert!(superblock_idx < self.usage_bitmap.len(),
+                      "Superblock index is out of bitmap range");
+
+        // Check for silly behavior which may indicate a bug, as well
+        debug_assert!(!mask.empty(),
+                      "Useless call to dealloc_blocks with empty mask");
+        debug_assert!(!mask.full(),
+                      "Inefficient call to dealloc_blocks with full mask, \
+                       you should probably be using dealloc_superblock");
+        let allocation_mask: usize = mask.into();
+
+        // Try to set the required allocation bits via OR
+        let superblock = &self.usage_bitmap[superblock_idx];
+        let old_bits = superblock.fetch_or(allocation_mask, Ordering::Relaxed);
+
+        // Make sure that none of the target blocks were previously allocated
+        if old_bits & allocation_mask == 0 {
+            // All good, ready to return
+            Ok(())
+        } else {
+            // Revert previous block allocation before exiting:
+            // - !allocation_mask is 1 except where we attempted to allocate.
+            // - old_bits is 1 where blocks were allocated before, 0 for blocks
+            //   which were not allocated before, but allocated by fetch_or.
+            // - After OR, we get a mask which is 1 except for the blocks of the
+            //   allocation mask which were initially 0, but set by fetch_or.
+            // - Therefore, AND-ing superblock with that will reset the bits of
+            //   the superblock bitmap which were set by fetch_or.
+            let clear_mask = old_bits | !allocation_mask;
+            let old_bits = superblock.fetch_and(clear_mask, Ordering::Relaxed);
+            Err(old_bits & clear_mask)
+        }
+    }
+
     /// Atomically deallocate a full superblock
     ///
-    /// This operation has `Relaxed` memory ordering and must be preceded by an
-    /// `Acquire` memory barrier in order to avoid deallocation being reordered
+    /// This operation has `Relaxed` memory ordering and must be preceded by a
+    /// `Release` memory barrier in order to avoid deallocation being reordered
     /// before usage of the memory block by the compiler or CPU.
     fn dealloc_superblock(&self, superblock_idx: usize) {
         // Check interface preconditions in debug builds
@@ -514,8 +580,8 @@ impl Allocator {
 
     /// Atomically deallocate a subset of the blocks within a superblock
     ///
-    /// This operation has `Relaxed` memory ordering and must be preceded by an
-    /// `Acquire` memory barrier in order to avoid deallocation being reordered
+    /// This operation has `Relaxed` memory ordering and must be preceded by a
+    /// `Release` memory barrier in order to avoid deallocation being reordered
     /// before usage of the memory block by the compiler or CPU.
     fn dealloc_blocks(&self,
                       superblock_idx: usize,
