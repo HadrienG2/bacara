@@ -675,8 +675,8 @@ impl Drop for Allocator {
 /// tail, where the head and tail superblocks are partially allocated and the
 /// body superblocks are fully allocated:
 ///
-///     |0011|1111|1111|1111|1000|
-///      head <----body----> tail
+/// `|0011|1111|1111|1111|1000|`
+/// ` head <----body----> tail`
 ///
 struct AllocTransaction<'allocator> {
     /// Bit pattern allocated in "head" superblock @ body_start_idx-1, if any
