@@ -148,8 +148,7 @@ impl Allocator {
         let usage_bitmap = std::iter::repeat(0)
                                      .map(AtomicUsize::new)
                                      .take(capacity / superblock_size)
-                                     .collect::<Vec<_>>()
-                                     .into_boxed_slice();
+                                     .collect::<Box<[_]>>();
 
         // Build and return the allocator struct
         Allocator {
