@@ -47,7 +47,7 @@ impl AllocationMask {
 
     /// Index after the last allocated block (start + len == end)
     pub fn end(&self) -> usize {
-        self.0.leading_zeros() as usize
+        Allocator::blocks_per_superblock() - self.0.leading_zeros() as usize
     }
 
     /// Truth that allocation mask is empty (has no allocated block)

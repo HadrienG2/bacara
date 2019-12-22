@@ -53,8 +53,7 @@
 
 mod builder;
 mod mask;
-
-use crate::mask::AllocationMask;
+mod transaction;
 
 use std::{
     alloc::{self, Layout},
@@ -66,6 +65,9 @@ use std::{
 
 // Re-export allocator builder at the crate root
 pub use builder::Builder;
+
+// Re-export allocation transaction for other components
+pub(crate) use crate::mask::AllocationMask;
 
 
 /// A thread-safe bitmap allocator
@@ -492,7 +494,7 @@ impl Allocator {
     /// This operation has `Relaxed` memory ordering and must be followed by an
     /// `Acquire` memory barrier in order to avoid allocation being reordered
     /// after usage of the memory block by the compiler or CPU.
-    fn try_alloc_superblock(&self, superblock_idx: usize) -> Result<(), usize> {
+    pub(crate) fn try_alloc_superblock(&self, superblock_idx: usize) -> Result<(), usize> {
         // Check interface preconditions in debug builds
         debug_assert!(superblock_idx < self.usage_bitmap.len(),
                       "Superblock index is out of bitmap range");
@@ -513,9 +515,9 @@ impl Allocator {
     /// This operation has `Relaxed` memory ordering and must be followed by an
     /// `Acquire` memory barrier in order to avoid allocation being reordered
     /// after usage of the memory block by the compiler or CPU.
-    fn try_alloc_blocks(&self,
-                        superblock_idx: usize,
-                        mask: AllocationMask) -> Result<(), usize> {
+    pub(crate) fn try_alloc_blocks(&self,
+                                   superblock_idx: usize,
+                                   mask: AllocationMask) -> Result<(), usize> {
         // Check interface preconditions in debug builds
         debug_assert!(superblock_idx < self.usage_bitmap.len(),
                       "Superblock index is out of bitmap range");
@@ -556,7 +558,7 @@ impl Allocator {
     /// This operation has `Relaxed` memory ordering and must be preceded by a
     /// `Release` memory barrier in order to avoid deallocation being reordered
     /// before usage of the memory block by the compiler or CPU.
-    fn dealloc_superblock(&self, superblock_idx: usize) {
+    pub(crate) fn dealloc_superblock(&self, superblock_idx: usize) {
         // Check interface preconditions in debug builds
         debug_assert!(superblock_idx < self.usage_bitmap.len(),
                       "Superblock index is out of bitmap range");
@@ -586,9 +588,9 @@ impl Allocator {
     /// This operation has `Relaxed` memory ordering and must be preceded by a
     /// `Release` memory barrier in order to avoid deallocation being reordered
     /// before usage of the memory block by the compiler or CPU.
-    fn dealloc_blocks(&self,
-                      superblock_idx: usize,
-                      mask: AllocationMask) {
+    pub(crate) fn dealloc_blocks(&self,
+                                 superblock_idx: usize,
+                                 mask: AllocationMask) {
         // Check interface preconditions in debug builds
         debug_assert!(superblock_idx < self.usage_bitmap.len(),
                       "Superblock index is out of bitmap range");
@@ -598,7 +600,7 @@ impl Allocator {
                       "Useless call to dealloc_blocks with empty mask");
         debug_assert!(!mask.full(),
                       "Inefficient call to dealloc_blocks with full mask, \
-                       you should probably be using dealloc_superblock");
+                       you should be using dealloc_superblock instead");
         let allocation_mask: usize = mask.into();
 
         // Clear the requested allocation bits via AND-NOT
@@ -661,63 +663,6 @@ impl Drop for Allocator {
 //       If I do this, I should mention it in the crate documentation, along
 //       with the fact that it's only suitable for specific use cases (due to
 //       limited capacity, and possibly no overalignment ability)
-
-
-/// RAII guard to automatically rollback failed allocations
-///
-/// In this lock-free bitmap allocator, the process of allocating memory which
-/// spans more than one superblock isn't atomic, and may therefore fail _after_
-/// some memory has already been allocated. In that case, the previous partial
-/// memory allocation must be reverted.
-///
-/// This struct imposes some structure on the memory allocation process which
-/// allows this transaction rollback process to occur automatically.
-///
-/// In order to be memory-efficient and allocation-free, it exploits the fact
-/// that all allocations can be decomposed into at most a head, a body and a
-/// tail, where the head and tail superblocks are partially allocated and the
-/// body superblocks are fully allocated:
-///
-/// `|0011|1111|1111|1111|1000|`
-/// ` head <----body----> tail`
-///
-struct AllocTransaction<'allocator> {
-    /// Bit pattern allocated in "head" superblock @ body_start_idx-1, if any
-    head_allocation_mask: Option<AllocationMask>,
-
-    /// Start index of fully allocated "body" superblock sequence (inclusive)
-    body_start_idx: usize,
-
-    /// End index of fully allocated "body" superblock sequence (exclusive)
-    body_end_idx: usize,
-
-    /// Bit pattern allocated in "tail" superblock @ body_end_idx, if any
-    tail_allocation_mask: Option<AllocationMask>,
-
-    /// Back-reference to the host allocator
-    allocator: &'allocator Allocator,
-}
-
-// TODO: Implement main API
-
-impl<'allocator> Drop for AllocTransaction<'allocator> {
-    fn drop(&mut self) {
-        // Deallocate head blocks, if any
-        if let Some(head_mask) = self.head_allocation_mask {
-            self.allocator.dealloc_blocks(self.body_start_idx-1, head_mask);
-        }
-
-        // Deallocate fully allocated body superblocks
-        for superblock_idx in self.body_start_idx..self.body_end_idx {
-            self.allocator.dealloc_superblock(superblock_idx);
-        }
-
-        // Deallocate tail blocks, if any
-        if let Some(tail_mask) = self.tail_allocation_mask {
-            self.allocator.dealloc_blocks(self.body_end_idx, tail_mask);
-        }
-    }
-}
 
 
 /// Small utility to divide two integers, rounding the result up
