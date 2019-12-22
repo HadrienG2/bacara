@@ -51,7 +51,7 @@
 //!
 //! FIXME: Oh yes I do need those, but API must be done first ;)
 
-pub mod builder;
+mod builder;
 mod mask;
 
 use crate::mask::AllocationMask;
@@ -63,14 +63,16 @@ use std::{
     sync::atomic::{self, AtomicUsize, Ordering},
 };
 
+pub use builder::Builder;
+
 
 /// A thread-safe bitmap allocator
 #[derive(Debug)]
 pub struct Allocator {
     /// Beginning of the backing store from which we'll be allocating memory
     ///
-    /// Guaranteed by `AllocatorBuilder` to contain an integer number of
-    /// superblocks, each of which maps into one `AtomicUsize` in usage_bitmap.
+    /// Guaranteed by `Builder` to contain an integer number of superblocks,
+    /// each of which maps into one `AtomicUsize` in usage_bitmap.
     backing_store_start: NonNull<MaybeUninit<u8>>,
 
     /// Bitmap tracking usage of the backing store's storage blocks
@@ -108,33 +110,33 @@ pub struct Allocator {
 impl Allocator {
     /// Start building an allocator
     ///
-    /// See the `AllocatorBuilder` documentation for more details on the
-    /// subsequent allocator configuration process.
-    pub const fn new() -> builder::AllocatorBuilder {
-        builder::AllocatorBuilder::new()
+    /// See the `Builder` documentation for more details on the subsequent
+    /// allocator configuration process.
+    pub const fn new() -> Builder {
+        Builder::new()
     }
 
     /// Allocator constructor proper, without invariant checking
     ///
-    /// This method mostly exists as an implementation detail of
-    /// `AllocatorBuilder`, and there is no plan to make it public at the moment
-    /// since I cannot think of a single reason to do so. You're not really
-    /// building Allocators in a tight loop, are you?
+    /// This method mostly exists as an implementation detail of `Builder`, and
+    /// there is no plan to make it public at the moment since I cannot think of
+    /// a single reason to do so. You're not really building Allocators in a
+    /// tight loop, are you?
     ///
     /// # Safety
     ///
     /// The block_align, block_size and capacity parameters may be assumed to
     /// uphold all the preconditions listed as "must" bullet points in the
-    /// corresponding `AllocatorBuilder` struct members' documentation, either
-    /// in this constructor or other methods of Allocator.
+    /// corresponding `Builder` struct members' documentation, either in this
+    /// constructor or other methods of Allocator.
     pub(crate) unsafe fn new_unchecked(block_align: usize,
                                        block_size: usize,
                                        capacity: usize) -> Self {
         // Allocate the backing store
         //
         // This is safe because we've checked all preconditions of `Layout`
-        // and `alloc()` during the `AllocatorBuilder` construction process,
-        // including the fact that capacity is not zero.
+        // and `alloc()` during the `Builder` construction process, including
+        // the fact that capacity is not zero.
         let backing_store_layout =
             Layout::from_size_align(capacity, block_align)
                    .expect("All Layout preconditions should have been checked");
@@ -638,8 +640,8 @@ impl Drop for Allocator {
 }
 
 // TODO: Implement GlobalAlloc trait? Will require lazy_static/OnceCell until
-//       AllocatorBuilder can be made const fn, but people might still find it
-//       useful for certain use cases...
+//       Builder can be made const fn, but people might still find it useful for
+//       certain use cases...
 //
 //       To allow this, I must not use the names alloc(), dealloc(),
 //       alloc_zeroed() and realloc() in the inherente Allocator API.

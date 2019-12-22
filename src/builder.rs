@@ -9,7 +9,7 @@ use crate::Allocator;
 //       preconditions are upheld upon constructing the allocator. These are
 //       listed as "must" bullet points in the struct members' doc comments.
 #[derive(Debug)]
-pub struct AllocatorBuilder {
+pub struct Builder {
     /// Block alignment in bytes
     /// - Will be set to 1 if unspecified
     /// - Must be a power of 2 (and thus nonzero), per `alloc::Layout` demands
@@ -33,7 +33,7 @@ pub struct AllocatorBuilder {
 // TODO: Make everything `const fn` so that the builder can be used to build a
 //       global allocator without dirty lazy_static/OnceCell tricks, once
 //       Rust's const-eval is powerful enough for that.
-impl AllocatorBuilder {
+impl Builder {
     /// Start building an allocator
     pub const fn new() -> Self {
         Self {
@@ -138,7 +138,7 @@ impl AllocatorBuilder {
         }
 
         // Build the allocator, this is safe because we have checked all the
-        // preconditions listed in the AllocatorBuilder struct documentation.
+        // preconditions listed in the Builder struct documentation.
         unsafe { Allocator::new_unchecked(block_align, block_size, capacity) }
     }
 }
