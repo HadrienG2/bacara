@@ -524,10 +524,10 @@ impl Allocator {
 
         // Check for silly behavior which may indicate a bug, as well
         debug_assert!(!mask.empty(),
-                      "Useless call to dealloc_blocks with empty mask");
+                      "Useless call to try_alloc_blocks with empty mask");
         debug_assert!(!mask.full(),
-                      "Inefficient call to dealloc_blocks with full mask, \
-                       you should probably be using dealloc_superblock");
+                      "Inefficient call to try_alloc_blocks with full mask, \
+                       you should probably be using try_alloc_superblock");
         let allocation_mask: usize = mask.into();
 
         // Try to set the required allocation bits via OR
@@ -535,6 +535,10 @@ impl Allocator {
         let old_bits = superblock.fetch_or(allocation_mask, Ordering::Relaxed);
 
         // Make sure that none of the target blocks were previously allocated
+        //
+        // TODO: Compare with more obvious CAS-based solution in both contended
+        //       and non-contended usage scenarios.
+        //
         if old_bits & allocation_mask == 0 {
             // All good, ready to return
             Ok(())
