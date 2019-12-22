@@ -375,7 +375,7 @@ impl Allocator {
 
         // TODO: Handle the case where we failed to allocate, exiting here
 
-        // Make sure that the previous writes to the allocation bitmap are
+        // Make sure that the previous reads from the allocation bitmap are
         // ordered before any subsequent access to the buffer by the current
         // thread, to avoid data races with the thread that deallocated the
         // memory that we are in the process of allocating.

@@ -12,7 +12,7 @@ use crate::Allocator;
 pub struct AllocatorBuilder {
     /// Block alignment in bytes
     /// - Will be set to 1 if unspecified
-    /// - Must be nonzero and a power of 2, per `std::alloc::Layout` demands
+    /// - Must be a power of 2 (and thus nonzero), per `alloc::Layout` demands
     block_align: Option<usize>,
 
     /// Block size in bytes
@@ -50,7 +50,6 @@ impl AllocatorBuilder {
     /// Alignment must be a power of 2, and will be set to 1 (byte alignment)
     /// by default if left unspecified.
     pub fn alignment(&mut self, align: usize) -> &mut Self {
-        // NOTE: Being a power of 2 implies being nonzero
         assert!(align.is_power_of_two(), "Alignment must be a power of 2");
         assert!(self.block_align.replace(align).is_none(),
                 "Alignment must only be set once");
