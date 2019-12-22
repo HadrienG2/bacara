@@ -25,6 +25,8 @@ use std::ops::Range;
 /// ` head <----body----> tail`
 ///
 struct AllocationTransaction<'allocator> {
+    // TODO: Investigate simpler data layouts
+
     /// Partial bit pattern allocated in the "head" superblock at superblock
     /// index (body_indices.start-1), if any
     head_allocation_mask: Option<AllocationMask>,
@@ -62,7 +64,7 @@ impl<'allocator> AllocationTransaction<'allocator> {
              calling Allocator::try_alloc_blocks() directly"
         );
         debug_assert!(
-            body_indices.end < allocator.capacity() / allocator.superblock_size(),
+            body_indices.end < allocator.capacity()/allocator.superblock_size(),
             "Requested body goes past the end of the allocator's backing store"
         );
 
@@ -102,7 +104,8 @@ impl<'allocator> AllocationTransaction<'allocator> {
     ///
     /// On failure, will return how many head blocks are actually available
     /// before the first body superblock.
-    pub fn try_alloc_head(&mut self, num_blocks: usize) -> Result<&mut Self, usize> {
+    pub fn try_alloc_head(&mut self,
+                          num_blocks: usize) -> Result<&mut Self, usize> {
         // Check preconditions, and that the user request makes sense
         self.debug_check_invariants();
         debug_assert_ne!(self.body_indices.start, 0,
@@ -133,7 +136,8 @@ impl<'allocator> AllocationTransaction<'allocator> {
     ///
     /// On failure, will return how many tail blocks are actually available
     /// after the last body superblock.
-    pub fn try_alloc_tail(&mut self, num_blocks: usize) -> Result<&mut Self, usize> {
+    pub fn try_alloc_tail(&mut self,
+                          num_blocks: usize) -> Result<&mut Self, usize> {
         // Check invariants + that the user request makes sense
         self.debug_check_invariants();
         debug_assert!(num_blocks != 0,
@@ -211,7 +215,8 @@ impl<'allocator> AllocationTransaction<'allocator> {
         }
 
         // Check that the body superblocks span a valid index range
-        let num_superblocks = self.allocator.capacity() / self.allocator.superblock_size();
+        let num_superblocks =
+            self.allocator.capacity() / self.allocator.superblock_size();
         debug_assert!(self.body_indices.end <= num_superblocks,
                       "Allocation body ends on an out-of-bounds index");
 
