@@ -63,6 +63,8 @@ use std::{
     sync::atomic::{self, AtomicUsize, Ordering},
 };
 
+
+// Re-export allocator builder at the crate root
 pub use builder::Builder;
 
 
