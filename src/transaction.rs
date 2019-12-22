@@ -97,7 +97,6 @@ impl<'allocator> AllocationTransaction<'allocator> {
         Ok(transaction)
     }
 
-
     // TODO: Constructor for the case where only a head/tail pair is needed
 
     /// Try to allocate N "head" blocks, falling before the body superblocks.
@@ -159,8 +158,11 @@ impl<'allocator> AllocationTransaction<'allocator> {
         Ok(self)
     }
 
-    /// Accept the transaction and return the range of block indices it spanned.
-    pub fn commit(self) -> Range<usize> {
+    // TODO: Query that allows debug assertions to check the total amount of
+    //       allocated blocks right before calling commit().
+
+    /// Accept the transaction and return the index of the first allocated block
+    pub fn commit(self) -> usize {
         // Check invariants
         self.debug_check_invariants();
 
@@ -173,20 +175,11 @@ impl<'allocator> AllocationTransaction<'allocator> {
                 self.body_indices.start * Allocator::blocks_per_superblock()
             };
 
-        // Find the index of the last "one" in the allocation mask
-        let last_block_idx =
-            if let Some(tail_mask) = self.tail_allocation_mask {
-                self.body_indices.end * Allocator::blocks_per_superblock()
-                    + tail_mask.end()
-            } else {
-                self.body_indices.end * Allocator::blocks_per_superblock()
-            };
-
         // Forget the transaction object so that transaction is not canceled
         std::mem::forget(self);
 
-        // Return the block range
-        first_block_idx..last_block_idx
+        // Return the index of the first allocated block
+        first_block_idx
     }
 
     /// Debug-mode check that the transaction object upholds its invariants
