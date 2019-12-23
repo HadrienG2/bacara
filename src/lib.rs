@@ -55,11 +55,16 @@ mod bitmap;
 mod builder;
 mod transaction;
 
+use crate::{
+    bitmap::AtomicSuperblockBitmap,
+    transaction::AllocTransaction,
+};
+
 use std::{
     alloc::{self, Layout},
     mem::{self, MaybeUninit},
     ptr::NonNull,
-    sync::atomic::{self, AtomicUsize, Ordering},
+    sync::atomic::{self, Ordering},
 };
 
 
@@ -89,12 +94,7 @@ pub struct Allocator {
     /// in bunches, via unsigned integers. This leads to the creation of a new
     /// artificial storage granularity, tracked by a full integer-sized bunch of
     /// bits in the bitmap, which we call a superblock.
-    ///
-    /// We use usize as our unsigned integer type because that's the one which
-    /// is most likely to have native atomic operations on a given CPU arch. But
-    /// this may lead to very big superblocks on future CPU archs, so we might
-    /// need to reconsider this decision in the future and use e.g. `AtomicU32`.
-    usage_bitmap: Box<[AtomicUsize]>,
+    usage_bitmap: Box<[AtomicSuperblockBitmap]>,
 
     /// Bitshift-based representation of the block size
     ///
@@ -151,8 +151,8 @@ impl Allocator {
 
         // Build the usage-tracking bitmap
         let superblock_size = block_size * Self::blocks_per_superblock();
-        let usage_bitmap = std::iter::repeat(0)
-                                     .map(AtomicUsize::new)
+        let usage_bitmap = std::iter::repeat(SuperblockBitmap::EMPTY)
+                                     .map(AtomicSuperblockBitmap::new)
                                      .take(capacity / superblock_size)
                                      .collect::<Box<[_]>>();
 
@@ -179,7 +179,7 @@ impl Allocator {
     ///
     /// This is the granularity at which the allocator's internal bitmap tracks
     /// which regions of the backing store are used and unused.
-    const fn block_size(&self) -> usize {
+    pub const fn block_size(&self) -> usize {
         1 << (self.block_size_shift as usize)
     }
 
@@ -187,7 +187,7 @@ impl Allocator {
     ///
     /// This is the allocation granularity at which this allocator should
     /// exhibit optimal CPU performance.
-    const fn superblock_size(&self) -> usize {
+    pub const fn superblock_size(&self) -> usize {
         self.block_size() * Self::blocks_per_superblock()
     }
 
@@ -196,7 +196,7 @@ impl Allocator {
     /// This is the maximal amount of memory that may be allocated from this
     /// allocator, assuming no memory waste due to unused block bytes and no
     /// fragmentation issues.
-    fn capacity(&self) -> usize {
+    pub fn capacity(&self) -> usize {
         self.usage_bitmap.len() * self.superblock_size()
     }
 
@@ -317,36 +317,22 @@ impl Allocator {
             // Have we found the right amount of free superblocks already?
             // (can succeed on first iteration if none are needed)
             if superblock_idx - first_superblock_idx == num_superblocks {
-                // Try to allocate these superblocks
-                // TODO: Replace with AllocTransaction API once ready
-                for (target_superblock_idx, target_superblock) in
-                    self.usage_bitmap[first_superblock_idx..superblock_idx]
-                        .iter()
-                        .enumerate()
-                {
-                    // Fully allocate current superblock, if it's still free
-                    let old_val =
-                        target_superblock.compare_and_swap(0,
-                                                           std::usize::MAX,
-                                                           Ordering::Relaxed);
+                // Try to allocate these superblocks as our allocation's body
+                let transaction = match AllocTransaction::with_body(
+                    self,
+                    first_superblock_idx,
+                    num_superblocks
+                ) {
+                    // On success, bubble up transaction object
+                    Ok(transaction) => transaction,
 
-                    // If someone else allocated this superblock...
-                    if old_val != 0 {
-                        // Rollback previous allocations
-                        for allocated_superblock in
-                            &self.usage_bitmap[first_superblock_idx..target_superblock_idx]
-                        {
-                            allocated_superblock.store(0, Ordering::Relaxed);
-                        }
-
-                        // Update our knowledge of the first superblock that
-                        // (might) be available for allocation
-                        first_superblock_idx = target_superblock_idx + 1;
-
-                        // Resume search for free superblocks
+                    // On failure, use what we learned about the superblock
+                    // landscape to guide the remainder of our search.
+                    Err(bad_superblock_idx) => {
+                        first_superblock_idx = bad_superblock_idx + 1;
                         continue 'sb_search;
                     }
-                }
+                };
 
                 // TODO: Try to allocate neighboring blocks, searching for all
                 //       acceptable bit patterns with `remaining_blocks` bits.
@@ -367,7 +353,7 @@ impl Allocator {
             } else {
                 // We need more free superblocks, is the current one free?
                 // TODO: Extract into a method
-                if superblock.load(Ordering::Relaxed) != 0 {
+                if !superblock.load(Ordering::Relaxed).is_empty() {
                     // If not, restart superblock search at the next loop index
                     first_superblock_idx = superblock_idx + 1;
                 }
@@ -495,18 +481,17 @@ impl Allocator {
     /// This operation has `Relaxed` memory ordering and must be followed by an
     /// `Acquire` memory barrier in order to avoid allocation being reordered
     /// after usage of the memory block by the compiler or CPU.
-    pub(crate) fn try_alloc_superblock(&self, superblock_idx: usize) -> Result<(), usize> {
+    pub(crate) fn try_alloc_superblock(
+        &self,
+        superblock_idx: usize
+    ) -> Result<(), SuperblockBitmap> {
         // Check interface preconditions in debug builds
         debug_assert!(superblock_idx < self.usage_bitmap.len(),
                       "Superblock index is out of bitmap range");
 
         // The superblock should initially be fully free
         self.usage_bitmap[superblock_idx]
-            .compare_exchange(0,
-                              std::usize::MAX,
-                              Ordering::Relaxed,
-                              Ordering::Relaxed)
-            .map(std::mem::drop)
+            .try_alloc_all(Ordering::Relaxed, Ordering::Relaxed)
     }
 
     /// Try to atomically allocate a subset of the blocks within a superblock
@@ -516,46 +501,18 @@ impl Allocator {
     /// This operation has `Relaxed` memory ordering and must be followed by an
     /// `Acquire` memory barrier in order to avoid allocation being reordered
     /// after usage of the memory block by the compiler or CPU.
-    pub(crate) fn try_alloc_blocks(&self,
-                                   superblock_idx: usize,
-                                   mask: SuperblockBitmap) -> Result<(), usize> {
+    pub(crate) fn try_alloc_blocks(
+        &self,
+        superblock_idx: usize,
+        mask: SuperblockBitmap
+    ) -> Result<(), SuperblockBitmap> {
         // Check interface preconditions in debug builds
         debug_assert!(superblock_idx < self.usage_bitmap.len(),
                       "Superblock index is out of bitmap range");
 
-        // Check for silly behavior which may indicate a bug, as well
-        debug_assert!(!mask.empty(),
-                      "Useless call to try_alloc_blocks with empty mask");
-        debug_assert!(!mask.full(),
-                      "Inefficient call to try_alloc_blocks with full mask, \
-                       you should probably be using try_alloc_superblock");
-        let allocation_mask: usize = mask.into();
-
-        // Try to set the required allocation bits via OR
-        let superblock = &self.usage_bitmap[superblock_idx];
-        let old_bits = superblock.fetch_or(allocation_mask, Ordering::Relaxed);
-
-        // Make sure that none of the target blocks were previously allocated
-        //
-        // TODO: Compare with more obvious CAS-based solution in both contended
-        //       and non-contended usage scenarios.
-        //
-        if old_bits & allocation_mask == 0 {
-            // All good, ready to return
-            Ok(())
-        } else {
-            // Revert previous block allocation before exiting:
-            // - !allocation_mask is 1 except where we attempted to allocate.
-            // - old_bits is 1 where blocks were allocated before, 0 for blocks
-            //   which were not allocated before, but allocated by fetch_or.
-            // - After OR, we get a mask which is 1 except for the blocks of the
-            //   allocation mask which were initially 0, but set by fetch_or.
-            // - Therefore, AND-ing superblock with that will reset the bits of
-            //   the superblock bitmap which were set by fetch_or.
-            let clear_mask = old_bits | !allocation_mask;
-            let old_bits = superblock.fetch_and(clear_mask, Ordering::Relaxed);
-            Err(old_bits & clear_mask)
-        }
+        self.usage_bitmap[superblock_idx].try_alloc_mask(mask,
+                                                         Ordering::Relaxed,
+                                                         Ordering::Relaxed)
     }
 
     /// Atomically deallocate a full superblock
@@ -564,28 +521,7 @@ impl Allocator {
     /// `Release` memory barrier in order to avoid deallocation being reordered
     /// before usage of the memory block by the compiler or CPU.
     pub(crate) fn dealloc_superblock(&self, superblock_idx: usize) {
-        // Check interface preconditions in debug builds
-        debug_assert!(superblock_idx < self.usage_bitmap.len(),
-                      "Superblock index is out of bitmap range");
-
-        // Deallocating a full superblock is just a matter of setting all of its
-        // bits to zero, which can be done simply by storing 0 in it
-        let superblock = &self.usage_bitmap[superblock_idx];
-        if cfg!(debug_assertions) {
-            // In debug builds, we make sure that the superblock was indeed
-            // marked as fully allocated (i.e. all bits set to 1), in order to
-            // detect various forms of incorrect allocator usage including
-            // double deallocation of memory buffers.
-            debug_assert_eq!(
-                superblock.swap(0, Ordering::Relaxed),
-                std::usize::MAX,
-                "Deallocated superblock which wasn't fully marked as allocated"
-            );
-        } else {
-            // In release builds, we just store 0 without checking the former
-            // value, which avoids use of expensive atomic read-modify-write ops
-            superblock.store(0, Ordering::Relaxed);
-        }
+        self.usage_bitmap[superblock_idx].dealloc_all(Ordering::Relaxed);
     }
 
     /// Atomically deallocate a subset of the blocks within a superblock
@@ -596,28 +532,7 @@ impl Allocator {
     pub(crate) fn dealloc_blocks(&self,
                                  superblock_idx: usize,
                                  mask: SuperblockBitmap) {
-        // Check interface preconditions in debug builds
-        debug_assert!(superblock_idx < self.usage_bitmap.len(),
-                      "Superblock index is out of bitmap range");
-
-        // Check for silly behavior which may indicate a bug, as well
-        debug_assert!(!mask.empty(),
-                      "Useless call to dealloc_blocks with empty mask");
-        debug_assert!(!mask.full(),
-                      "Inefficient call to dealloc_blocks with full mask, \
-                       you should be using dealloc_superblock instead");
-        let allocation_mask: usize = mask.into();
-
-        // Clear the requested allocation bits via AND-NOT
-        let superblock = &self.usage_bitmap[superblock_idx];
-        let old_bits = superblock.fetch_and(!allocation_mask,
-                                            Ordering::Relaxed);
-
-        // In debug builds, make sure that the corresponding blocks were
-        // indeed marked as allocated (i.e. all bits in allocation mask were 1)
-        debug_assert_eq!(old_bits & allocation_mask, allocation_mask,
-                         "Deallocated blocks which were marked as free, \
-                          a double free or corruption most likely occured");
+        self.usage_bitmap[superblock_idx].dealloc_mask(mask, Ordering::Relaxed);
     }
 }
 
@@ -625,14 +540,10 @@ impl Drop for Allocator {
     fn drop(&mut self) {
         // Make sure that no storage blocks were allocated, as the corresponding
         // pointers will become dangling when the allocator is dropped.
-        //
-        // We don't need any particular memory ordering constraint because our
-        // &mut self allows us to assume exclusive access to the `Allocator`
-        // management structures, without any fear that other threads might be
-        // concurrently calling allocation and deallocation methods.
         debug_assert!(
-            self.usage_bitmap.iter()
-                             .all(|bits| bits.load(Ordering::Relaxed) == 0),
+            self.usage_bitmap
+                .iter_mut()
+                .all(|bits| *bits.get_mut() == SuperblockBitmap::EMPTY),
             "Allocator was dropped while there were still live allocations"
         );
 

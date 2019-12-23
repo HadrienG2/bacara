@@ -22,7 +22,7 @@ use crate::{Allocator, SuperblockBitmap};
 /// `|0011|1111|1111|1111|1000|`
 /// ` head <----body----> tail`
 ///
-struct AllocTransaction<'allocator> {
+pub struct AllocTransaction<'allocator> {
     /// Number of blocks allocated at the end of the "head" superblock, located
     /// right before the body superblock sequence.
     num_head_blocks: usize,
@@ -120,7 +120,7 @@ impl<'allocator> AllocTransaction<'allocator> {
         self.allocator
             .try_alloc_blocks(self.body_start_idx - 1,
                               SuperblockBitmap::new_head_mask(num_blocks))
-            .map_err(|actual_bitmap| actual_bitmap.trailing_zeros() as usize)?;
+            .map_err(|actual_bitmap| actual_bitmap.free_head_blocks())?;
 
         // On success, add the head blocks to the transaction
         self.num_head_blocks = num_blocks;
@@ -154,7 +154,7 @@ impl<'allocator> AllocTransaction<'allocator> {
         self.allocator
             .try_alloc_blocks(body_end_idx,
                               SuperblockBitmap::new_tail_mask(num_blocks))
-            .map_err(|actual_bitmap| actual_bitmap.leading_zeros() as usize)?;
+            .map_err(|actual_bitmap| actual_bitmap.free_tail_blocks())?;
 
         // On success, add the tail blocks to the transaction
         self.num_tail_blocks = num_blocks;
