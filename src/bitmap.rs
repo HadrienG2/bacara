@@ -6,7 +6,10 @@
 
 use crate::Allocator;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    ops::{Add, BitAnd, BitOr, Not, Sub},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 
 /// Block allocation pattern within a superblock
@@ -83,23 +86,50 @@ impl SuperblockBitmap {
     pub fn free_tail_blocks(&self) -> usize {
         self.0.trailing_zeros() as usize
     }
+}
 
-    /// Compute the inverse of a bitmap (every block which is marked allocated
-    /// in this mask is deallocated in the other, and vice versa)
-    pub fn inverse(&self) -> Self {
+// Use the addition operator (or bit-or) for set union
+impl Add for SuperblockBitmap {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self {
+        self | rhs
+    }
+}
+
+// Use the bit-and operaztor for set intersection
+impl BitAnd for SuperblockBitmap {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self {
+        Self(self.0 & rhs.0)
+    }
+}
+
+// Use the bit-or operator (or addition) for set union
+impl BitOr for SuperblockBitmap {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+// Use the negation operator for absolute set complement
+impl Not for SuperblockBitmap {
+    type Output = Self;
+
+    fn not(self) -> Self {
         Self(!self.0)
     }
+}
 
-    /// Intersect two bitmaps to get the set of blocks which are allocated in
-    /// both of them
-    pub fn intersection(&self, other: Self) -> Self {
-        Self(self.0 & other.0)
-    }
+// Use the subtraction operator for relative set complement
+impl Sub for SuperblockBitmap {
+    type Output = Self;
 
-    /// Unite two bitmaps to get the set of blocks which are allocated in either
-    /// of them
-    pub fn union(&self, other: Self) -> Self {
-        Self(self.0 | other.0)
+    fn sub(self, rhs: Self) -> Self {
+        self & (!rhs)
     }
 }
 
@@ -156,20 +186,20 @@ impl AtomicSuperblockBitmap {
     // TODO: When we know the final usage pattern, decide if some form of
     //       compare_exchange_weak could be useful.
 
-    /// Atomically intersect the atomic bitmap with another bitmap, and return
-    /// the value which was formerly stored in the atomic bitmap.
-    fn fetch_intersect(&self,
-                       val: SuperblockBitmap,
-                       order: Ordering) -> SuperblockBitmap {
-        SuperblockBitmap(self.0.fetch_and(val.0, order))
+    /// Atomically set bits which are set in "val" in the atomic bitmap (aka set
+    /// union) and return the previous value.
+    fn fetch_add(&self,
+                 val: SuperblockBitmap,
+                 order: Ordering) -> SuperblockBitmap {
+        SuperblockBitmap(self.0.fetch_or(val.0, order))
     }
 
-    /// Atomically unite the atomic bitmap with another bitmap, and return the
-    /// value which was formerly stored in the atomic bitmap.
-    fn fetch_unite(&self,
-                   val: SuperblockBitmap,
-                   order: Ordering) -> SuperblockBitmap {
-        SuperblockBitmap(self.0.fetch_or(val.0, order))
+    /// Atomically clear bits which are set in "val" in the atomic bitmap (aka
+    /// relative set complement) and return the previous value.
+    fn fetch_sub(&self,
+                 val: SuperblockBitmap,
+                 order: Ordering) -> SuperblockBitmap {
+        SuperblockBitmap(self.0.fetch_and(!val.0, order))
     }
 
     /// Try to fully allocate a superblock.
@@ -204,22 +234,17 @@ impl AtomicSuperblockBitmap {
                        you should be using try_alloc_all instead");
 
         // Set the required allocation bits, check which were already set
-        let old_bitmap = self.fetch_unite(mask, success);
+        let mut former_bitmap = self.fetch_add(mask, success);
 
         // Make sure that none of the target blocks were previously allocated
-        let previously_allocated = old_bitmap.intersection(mask);
-        if previously_allocated.is_empty() {
+        if (former_bitmap & mask).is_empty() {
             // All good, ready to return
             Ok(())
         } else {
-            // Revert previous block allocation before exiting:
-            // - Every block which was allocated in old_bitmap must stay as-is.
-            // - Every block which was not allocated by the above operation
-            //   (because it wasn't requested in "mask") must stay as-is.
-            // - All other blocks must be deallocated.
-            let clear_mask = mask.intersection(previously_allocated.inverse());
-            let old_bitmap = self.fetch_intersect(clear_mask.inverse(), failure);
-            Err(old_bitmap.intersection(clear_mask))
+            // Revert previous block allocation before exiting
+            let allocated_bits = mask - former_bitmap;
+            former_bitmap = self.fetch_sub(allocated_bits, failure);
+            Err(former_bitmap - allocated_bits)
         }
     }
 
@@ -257,11 +282,11 @@ impl AtomicSuperblockBitmap {
                        you should be using dealloc_all instead");
 
         // Clear the requested allocation bits
-        let old_bitmap = self.fetch_intersect(mask.inverse(), order);
+        let old_bitmap = self.fetch_sub(mask, order);
 
         // In debug builds, make sure that all requested bits were indeed marked
         // as allocated beforehand.
-        debug_assert_eq!(old_bitmap.intersection(mask), mask,
+        debug_assert_eq!(old_bitmap & mask, mask,
                          "Tried to deallocate blocks which weren't allocated");
     }
 }
