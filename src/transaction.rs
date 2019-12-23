@@ -24,7 +24,7 @@ use std::num::NonZeroUsize;
 /// `|0011|1111|1111|1111|1000|`
 /// ` head <----body----> tail`
 ///
-struct AllocationTransaction<'allocator> {
+struct AllocTransaction<'allocator> {
     /// Number of blocks allocated at the end of the "head" superblock, located
     /// right before the body superblock sequence.
     num_head_blocks: usize,
@@ -43,12 +43,12 @@ struct AllocationTransaction<'allocator> {
     allocator: &'allocator Allocator,
 }
 
-impl<'allocator> AllocationTransaction<'allocator> {
+impl<'allocator> AllocTransaction<'allocator> {
     /// Start an allocation transaction by trying to allocate a range of
     /// contiguous "body" superblocks (which can be empty for head/tail pairs).
     ///
     /// If your block sequence fits in a single superblock, you don't need to
-    /// use AllocationTransaction, just call `Allocator::try_alloc_blocks()`.
+    /// use AllocTransaction, just call `Allocator::try_alloc_blocks()`.
     ///
     /// If the body allocation succeeds, this function returns the resulting
     /// transaction object. If it fails, the function returns the index of the
@@ -225,7 +225,7 @@ impl<'allocator> AllocationTransaction<'allocator> {
     }
 }
 
-impl Drop for AllocationTransaction<'_> {
+impl Drop for AllocTransaction<'_> {
     fn drop(&mut self) {
         // Check invariants in debug build
         self.debug_check_invariants();
