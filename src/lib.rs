@@ -51,8 +51,8 @@
 //!
 //! FIXME: Oh yes I do need those, but API must be done first ;)
 
+mod bitmap;
 mod builder;
-mod mask;
 mod transaction;
 
 use std::{
@@ -67,7 +67,7 @@ use std::{
 pub use builder::Builder;
 
 // Re-export allocation transaction for other components
-pub(crate) use crate::mask::AllocationMask;
+pub(crate) use crate::bitmap::SuperblockBitmap;
 
 
 /// A thread-safe bitmap allocator
@@ -454,9 +454,10 @@ impl Allocator {
                     .min(end_block_idx - block_idx);
 
             // Deallocate leading buffer blocks in this first superblock
-            self.dealloc_blocks(superblock_idx,
-                                AllocationMask::new_contiguous(local_start_idx,
-                                                               local_len));
+            self.dealloc_blocks(
+                superblock_idx,
+                SuperblockBitmap::new_contiguous(local_start_idx, local_len)
+            );
 
             // Advance block pointer, stop if all blocks were liberated
             block_idx += local_len;
@@ -479,7 +480,7 @@ impl Allocator {
         // Deallocate trailing buffer blocks in the last superblock
         let remaining_len = end_block_idx - block_idx;
         self.dealloc_blocks(end_superblock_idx,
-                            AllocationMask::new_tail(remaining_len));
+                            SuperblockBitmap::new_tail(remaining_len));
     }
 
     // TODO: Provide an API which creates an AllocTransaction with a certain
@@ -517,7 +518,7 @@ impl Allocator {
     /// after usage of the memory block by the compiler or CPU.
     pub(crate) fn try_alloc_blocks(&self,
                                    superblock_idx: usize,
-                                   mask: AllocationMask) -> Result<(), usize> {
+                                   mask: SuperblockBitmap) -> Result<(), usize> {
         // Check interface preconditions in debug builds
         debug_assert!(superblock_idx < self.usage_bitmap.len(),
                       "Superblock index is out of bitmap range");
@@ -594,7 +595,7 @@ impl Allocator {
     /// before usage of the memory block by the compiler or CPU.
     pub(crate) fn dealloc_blocks(&self,
                                  superblock_idx: usize,
-                                 mask: AllocationMask) {
+                                 mask: SuperblockBitmap) {
         // Check interface preconditions in debug builds
         debug_assert!(superblock_idx < self.usage_bitmap.len(),
                       "Superblock index is out of bitmap range");
