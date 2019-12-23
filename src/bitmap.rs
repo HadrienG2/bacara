@@ -103,13 +103,6 @@ impl SuperblockBitmap {
     }
 }
 
-// TODO: Get rid of this
-impl From<SuperblockBitmap> for usize {
-    fn from(x: SuperblockBitmap) -> usize {
-        x.0
-    }
-}
-
 
 /// Atomic variant of SuperblockBitmap
 ///
