@@ -35,6 +35,20 @@ impl AllocationMask {
         Self(((1 << len) - 1) << start)
     }
 
+    /// Compute an allocation mask for a "head" block sequence, which must end
+    /// at the end of the superblock
+    pub fn new_head(len: usize) -> Self {
+        let len = len.into();
+        Self::new(Allocator::blocks_per_superblock() - len - 1, len)
+    }
+
+    /// Compute an allocation mask for a "tail" block sequence, which must start
+    /// at the beginning of the superblock
+    pub fn new_tail(len: usize) -> Self {
+        let len = len.into();
+        Self::new(0, len)
+    }
+
     /// Index of the first allocated block
     pub fn start(&self) -> usize {
         self.0.trailing_zeros() as usize
