@@ -19,7 +19,7 @@ pub struct AllocationMask(usize);
 impl AllocationMask {
     /// Compute an allocation mask given the index of the first bit that should
     /// be 1 (allocated) and the number of bits that should be 1.
-    pub fn new(start: usize, len: usize) -> Self {
+    pub fn new_contiguous(start: usize, len: usize) -> Self {
         // Check interface preconditions in debug builds
         debug_assert!(start < Allocator::blocks_per_superblock(),
                       "Allocation start is out of superblock range");
@@ -39,29 +39,14 @@ impl AllocationMask {
     /// at the end of the superblock
     pub fn new_head(len: usize) -> Self {
         let len = len.into();
-        Self::new(Allocator::blocks_per_superblock() - len - 1, len)
+        Self::new_contiguous(Allocator::blocks_per_superblock() - len - 1, len)
     }
 
     /// Compute an allocation mask for a "tail" block sequence, which must start
     /// at the beginning of the superblock
     pub fn new_tail(len: usize) -> Self {
         let len = len.into();
-        Self::new(0, len)
-    }
-
-    /// Index of the first allocated block
-    pub fn start(&self) -> usize {
-        self.0.trailing_zeros() as usize
-    }
-
-    /// Number of allocated blocks
-    pub fn len(&self) -> usize {
-        self.0.count_ones() as usize
-    }
-
-    /// Index after the last allocated block (start + len == end)
-    pub fn end(&self) -> usize {
-        Allocator::blocks_per_superblock() - self.0.leading_zeros() as usize
+        Self::new_contiguous(0, len)
     }
 
     /// Truth that allocation mask is empty (has no allocated block)

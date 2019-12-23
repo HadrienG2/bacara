@@ -455,8 +455,8 @@ impl Allocator {
 
             // Deallocate leading buffer blocks in this first superblock
             self.dealloc_blocks(superblock_idx,
-                                AllocationMask::new(local_start_idx,
-                                                    local_len));
+                                AllocationMask::new_contiguous(local_start_idx,
+                                                               local_len));
 
             // Advance block pointer, stop if all blocks were liberated
             block_idx += local_len;
@@ -479,7 +479,7 @@ impl Allocator {
         // Deallocate trailing buffer blocks in the last superblock
         let remaining_len = end_block_idx - block_idx;
         self.dealloc_blocks(end_superblock_idx,
-                            AllocationMask::new(0, remaining_len));
+                            AllocationMask::new_tail(remaining_len));
     }
 
     // TODO: Provide an API which creates an AllocTransaction with a certain
