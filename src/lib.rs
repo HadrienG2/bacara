@@ -265,7 +265,7 @@ impl Allocator {
         }
 
         // Convert requested size to a number of requested blocks
-        let num_blocks = div_round_up(size, Self::blocks_per_superblock());
+        let num_blocks = div_round_up(size, self.block_size());
 
         // Determine how many complete superblocks must be allocated at minimum.
         // If we denote N = Self::blocks_per_superblock() and use "SB" as a
@@ -283,12 +283,20 @@ impl Allocator {
         let remaining_blocks =
             num_blocks - num_superblocks * Self::blocks_per_superblock();
 
+        // TODO: May want to add a special path for the num_blocks == 0 case
+        //       since the logic can be quite different (e.g. head/tail blocks
+        //       may not be necessary)
+
         // Look for that number of completely free supeblocks
         //
         // TODO: Use a state variable to avoid always scanning through the
         //       superblock list from 0, instead picking up where the previous
         //       thread left off. That variable does not need to be consistent,
         //       it's just an optimization, so loads and stores are enough.
+        //
+        //       We could go one step further and store both a superblock index
+        //       and a block index withing that variable, via some bit-packing
+        //       trick : |superblock_idx|block_idx|.
         //
         //       Make sure not to update this variable early on durign search,
         //       without going O(N), to avoid increasing the odd of an
@@ -318,7 +326,7 @@ impl Allocator {
             // (can succeed on first iteration if none are needed)
             if superblock_idx - first_superblock_idx == num_superblocks {
                 // Try to allocate these superblocks as our allocation's body
-                let transaction = match AllocTransaction::with_body(
+                let mut transaction = match AllocTransaction::with_body(
                     self,
                     first_superblock_idx,
                     num_superblocks
@@ -333,6 +341,42 @@ impl Allocator {
                         continue 'sb_search;
                     }
                 };
+
+                // Alright, we have allocated body superblocks, now let's try to
+                // allocate head and tail blocks.
+                //
+                // We'll start by trying to allocate as much as possible on the
+                // head block's side (that is necessary to guarantee a compact
+                // allocation layout in a classing mostly-FIFO
+                // allocation/liberation scenario), then gradually revise that
+                // expectation towards zero head blocks as our failures tell us.
+                //
+                let (mut num_head_blocks, min_head_blocks) =
+                    // Do we need to have a tail?
+                    if remaining_blocks >= Self::blocks_per_superblock() {
+                        // If so, we start to push as much as possible on the
+                        // head side, and stop when even a fully allocated tail
+                        // superblock wouldn't be enough.
+                        (Self::blocks_per_superblock() - 1,
+                         remaining_blocks - Self::blocks_per_superblock())
+                    } else {
+                        // If not, we start by pushing everything on the head
+                        // side, and stop when we have moved everything to the
+                        // tail side.
+                        (remaining_blocks, 0)
+                    };
+                'head_search: while num_head_blocks >= min_head_blocks {
+                    // Try to allocate the desired number of head blocks
+                    match transaction.try_alloc_head(num_head_blocks) {
+                        // We did it, now let's try to allocate the remaining
+                        // blocks as tail blocks
+                        Ok(_) => unimplemented!(),
+
+                        // We didn't manage, but now we know how many head
+                        // blocks we actually have. Check if that's enough
+                        Err(actual_head_blocks) => unimplemented!(),
+                    }
+                }
 
                 // TODO: Try to allocate neighboring blocks, searching for all
                 //       acceptable bit patterns with `remaining_blocks` bits.
