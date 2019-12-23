@@ -456,7 +456,7 @@ impl Allocator {
             // Deallocate leading buffer blocks in this first superblock
             self.dealloc_blocks(
                 superblock_idx,
-                SuperblockBitmap::new_contiguous(local_start_idx, local_len)
+                SuperblockBitmap::new_mask(local_start_idx, local_len)
             );
 
             // Advance block pointer, stop if all blocks were liberated
@@ -480,7 +480,7 @@ impl Allocator {
         // Deallocate trailing buffer blocks in the last superblock
         let remaining_len = end_block_idx - block_idx;
         self.dealloc_blocks(end_superblock_idx,
-                            SuperblockBitmap::new_tail(remaining_len));
+                            SuperblockBitmap::new_tail_mask(remaining_len));
     }
 
     // TODO: Provide an API which creates an AllocTransaction with a certain

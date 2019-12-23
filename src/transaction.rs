@@ -119,7 +119,7 @@ impl<'allocator> AllocTransaction<'allocator> {
         // actually available (trailing zeros in the head superblock)
         self.allocator
             .try_alloc_blocks(self.body_start_idx - 1,
-                              SuperblockBitmap::new_head(num_blocks))
+                              SuperblockBitmap::new_head_mask(num_blocks))
             .map_err(|actual_bitmap| actual_bitmap.trailing_zeros() as usize)?;
 
         // On success, add the head blocks to the transaction
@@ -153,7 +153,7 @@ impl<'allocator> AllocTransaction<'allocator> {
         // actually available (leading zeros in the tail superblock)
         self.allocator
             .try_alloc_blocks(body_end_idx,
-                              SuperblockBitmap::new_tail(num_blocks))
+                              SuperblockBitmap::new_tail_mask(num_blocks))
             .map_err(|actual_bitmap| actual_bitmap.leading_zeros() as usize)?;
 
         // On success, add the tail blocks to the transaction
@@ -232,7 +232,7 @@ impl Drop for AllocTransaction<'_> {
         if self.num_head_blocks != 0 {
             self.allocator.dealloc_blocks(
                 self.body_start_idx - 1,
-                SuperblockBitmap::new_head(self.num_head_blocks)
+                SuperblockBitmap::new_head_mask(self.num_head_blocks)
             );
         }
 
@@ -246,7 +246,7 @@ impl Drop for AllocTransaction<'_> {
         if self.num_tail_blocks != 0 {
             self.allocator.dealloc_blocks(
                 body_end_idx,
-                SuperblockBitmap::new_tail(self.num_tail_blocks)
+                SuperblockBitmap::new_tail_mask(self.num_tail_blocks)
             );
         }
     }

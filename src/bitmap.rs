@@ -9,16 +9,16 @@ use crate::Allocator;
 
 /// Block allocation pattern within a superblock
 ///
-/// This bitmap serves two purposes: to specify the blocks that we _want_ to
-/// allocate within a superblock (as an allocation mask), and to describe which
-/// blocks are _currently_ allocated in a superblock.
+/// This bitmap serves two purposes: to specify a sequence of blocks that we
+/// _want_ to allocate within a superblock (an allocation mask), and to describe
+/// which blocks are _currently_ allocated in a superblock.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SuperblockBitmap(usize);
 
 impl SuperblockBitmap {
     /// Compute an allocation mask given the index of the first bit that should
     /// be 1 (allocated) and the number of bits that should be 1.
-    pub fn new_contiguous(start: usize, len: usize) -> Self {
+    pub fn new_mask(start: usize, len: usize) -> Self {
         // Check interface preconditions in debug builds
         debug_assert!(start < Allocator::blocks_per_superblock(),
                       "Allocation start is out of superblock range");
@@ -36,16 +36,16 @@ impl SuperblockBitmap {
 
     /// Compute an allocation mask for a "head" block sequence, which must end
     /// at the end of the superblock
-    pub fn new_head(len: usize) -> Self {
+    pub fn new_head_mask(len: usize) -> Self {
         let len = len.into();
-        Self::new_contiguous(Allocator::blocks_per_superblock() - len - 1, len)
+        Self::new_mask(Allocator::blocks_per_superblock() - len - 1, len)
     }
 
     /// Compute an allocation mask for a "tail" block sequence, which must start
     /// at the beginning of the superblock
-    pub fn new_tail(len: usize) -> Self {
+    pub fn new_tail_mask(len: usize) -> Self {
         let len = len.into();
-        Self::new_contiguous(0, len)
+        Self::new_mask(0, len)
     }
 
     /// Truth that allocation mask is empty (has no allocated block)
