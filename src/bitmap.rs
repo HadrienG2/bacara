@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Block allocation pattern within a superblock
 ///
-/// This bitmap serves two purposes: to specify a sequence of blocks that we
-/// _want_ to allocate within a superblock (an allocation mask), and to describe
-/// which blocks are _currently_ allocated in a superblock.
+/// This bitmap can be used for two purposes: to specify a sequence of blocks
+/// that we _want_ to allocate within a superblock (an allocation mask), and to
+/// describe which blocks are _currently_ allocated in a superblock.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct SuperblockBitmap(usize);
@@ -241,14 +241,14 @@ impl AtomicSuperblockBitmap {
             // marked as fully allocated in order to detect various forms of
             // incorrect allocator usage including double free.
             assert_eq!(
-                self.swap(SuperblockBitmap::EMPTY, Ordering::Relaxed),
+                self.swap(SuperblockBitmap::EMPTY, order),
                 SuperblockBitmap::FULL,
                 "Tried to deallocate superblock which wasn't fully allocated"
             );
         } else {
             // In release builds, we just store 0 without checking the former
             // value, which avoids use of expensive atomic read-modify-write ops
-            self.store(SuperblockBitmap::EMPTY, Ordering::Relaxed);
+            self.store(SuperblockBitmap::EMPTY, order);
         }
     }
 
