@@ -3,8 +3,6 @@
 
 use crate::{Allocator, AllocationMask};
 
-use std::num::NonZeroUsize;
-
 
 /// RAII guard to automatically rollback failed allocations
 ///
