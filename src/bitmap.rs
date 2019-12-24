@@ -86,6 +86,53 @@ impl SuperblockBitmap {
     pub fn free_tail_blocks(&self) -> usize {
         self.0.trailing_zeros() as usize
     }
+
+    /// Search for a hole of N contiguous blocks, as early as possible in the
+    /// superblock to keep the bitmap as densely populated as possible.
+    ///
+    /// On success, return the allocation mask associated with that hole. On
+    /// failure, return the size of a possible head allocation.
+    pub fn search_free_blocks(
+        &self,
+        num_blocks: usize
+    ) -> Result<SuperblockBitmap, usize> {
+        // Prepare a working copy of the bitmap's integer representation
+        let mut bits = self.0;
+
+        // TODO: As a future optimization, can check if
+        //       `num_blocks > bits.count_zeros()`. This should be useful on
+        //       any CPU with a native popcnt instruction, including modern
+        //       Intel CPUs when building with `-C target-cpu=native`.
+
+        // Keep track of the index at which we're currently looking for holes
+        let mut block_idx = 0;
+        loop {
+            // How many blocks have we not looked at yet?
+            let remaining_blocks =
+                Allocator::blocks_per_superblock() - block_idx;
+
+            // Can we still find a suitably large hole in here?
+            if num_blocks > remaining_blocks {
+                return Err(self.free_head_blocks());
+            }
+
+            // Find how many blocks are available at the current index. We must
+            // use a minimum here because our bit shift-based technique for
+            // iterating over bits of the bitmap (see below) will create zeroes
+            // at the end of our "bits" working variable.
+            let free_blocks =
+                (bits.trailing_zeros() as usize).min(remaining_blocks);
+
+            // Have we found a large enough hole?
+            if free_blocks as usize >= num_blocks {
+                return Ok(Self::new_mask(block_idx, num_blocks));
+            }
+
+            // If not, skip the hole and the block that ended it
+            bits >>= free_blocks + 1;
+            block_idx += free_blocks + 1;
+        }
+    }
 }
 
 // Use the addition operator (or bit-or) for set union
