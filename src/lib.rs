@@ -381,7 +381,7 @@ impl Allocator {
         }
 
         // TODO: Now make this a generator so that one can resume the search if
-        //       allocation isn't successful.
+        //       allocation isn't successful. Use genawaiter to work on stable.
         //
         // FIXME: There's probably also a more efficient way to do the search
         //        which does not require querying head blocks until we're sure
