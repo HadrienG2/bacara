@@ -60,7 +60,10 @@ use crate::{
     transaction::AllocTransaction,
 };
 
-use genawaiter::sync::{Co, Gen};
+use genawaiter::{
+    generator_mut,
+    stack::Co,
+};
 
 use std::{
     alloc::{self, Layout},
@@ -272,22 +275,6 @@ impl Allocator {
         // Convert requested size to a number of requested blocks
         let num_blocks = div_round_up(size, self.block_size());
 
-        // Determine how many complete superblocks must be allocated at minimum.
-        // If we denote N = Self::blocks_per_superblock() and use "SB" as a
-        // shorthand for superblock, the following schematics of possible
-        // allocation patterns should help you see what's going on:
-        //
-        // From 0 to N-1, 1 partial SB is OK: |0000| -> |1110|
-        // From N to 2*N-2, 2 partial SBs are OK: |0111|1000| -> |0111|1110|
-        // At 2*N-1 blocks, need 1 full SB and N-1 other blocks: |1111|1110|
-        // Every N blocks after that, need one more full SB: |1111|1111|1110|
-        //
-        let num_superblocks =
-            num_blocks.saturating_sub(Self::blocks_per_superblock() - 1)
-                      / Self::blocks_per_superblock();
-        let remaining_blocks =
-            num_blocks - num_superblocks * Self::blocks_per_superblock();
-
         // This type describes what kind of hole we can find in the bitmap
         enum HoleKind {
             // For holes that fit within a single superblock, all we need is an
@@ -296,7 +283,7 @@ impl Allocator {
 
             // For holes that span multiple superblocks, we need to know the
             // numbers of head blocks (if any).
-            WithHeadBlocks(Option<NonZeroUsize>),
+            WithHeadBlocks(usize),
         }
 
         // Add some position metadata to that and we should be good to go
@@ -309,10 +296,10 @@ impl Allocator {
         }
 
         // This generator searches for and produces holes in the bitmap
-        let hole_generator = Gen::new(|co: Co<Hole>| async move {
+        generator_mut!(hole_generator, |co: Co<Hole>| async move {
             // Hole search status
             let mut remaining_blocks = num_blocks;
-            let mut head_blocks = None;
+            let mut num_head_blocks = 0;
             let mut head_superblock_idx = 0;
 
             // Search for a large enough hole in the bitmap
@@ -362,7 +349,7 @@ impl Allocator {
                 // If we have already found free blocks previously, try to
                 // append at end of that known hole. On success, we'll jump to
                 // the next loop iteration, on failure, we'll drop that hole.
-                if head_blocks.is_some() {
+                if num_head_blocks != 0 {
                     // Do we need a full extra superblock to pursue this track?
                     if remaining_blocks >= Self::blocks_per_superblock() {
                         // If so, is the current superblock fully free?
@@ -381,7 +368,7 @@ impl Allocator {
                                 //       state.
                                 co.yield_(Hole {
                                     head_superblock_idx,
-                                    kind: HoleKind::WithHeadBlocks(head_blocks),
+                                    kind: HoleKind::WithHeadBlocks(num_head_blocks),
                                     // TODO: Give more info, including about
                                     //       extra tail blocks? Or just
                                     //       assume that allocator is going
@@ -392,7 +379,7 @@ impl Allocator {
                         } else {
                             // Without a full extra superblock, the current hole is
                             // too small and we must abandon that hole...
-                            head_blocks = None;
+                            num_head_blocks = 0;
                         }
                     } else {
                         // We need less than a superblock, does the current
@@ -410,7 +397,7 @@ impl Allocator {
                             //       case into a single yield statement?
                             co.yield_(Hole {
                                 head_superblock_idx,
-                                kind: HoleKind::WithHeadBlocks(head_blocks),
+                                kind: HoleKind::WithHeadBlocks(num_head_blocks),
                                 // TODO: Give more info, including about
                                 //       extra tail blocks? Or just
                                 //       assume that allocator is going
@@ -420,16 +407,16 @@ impl Allocator {
                         } else {
                             // Without these extra blocks, the current hole is too
                             // small and we must abandon that hole...
-                            head_blocks = None;
+                            num_head_blocks = 0;
                         }
                     }
                 }
 
                 // If control reaches this point, we're not currently investigating
                 // any hole and may start a new one.
-                debug_assert!(head_blocks.is_none(),
-                              "Either head_blocks was not reset properly, or
-                               hole search should have continued/broken loop");
+                debug_assert_eq!(num_head_blocks, 0,
+                                 "Either head_blocks was not reset properly, or
+                                  hole search should have continued/broken loop");
 
                 // So, let's look for a suitably large hole in our bitmap
                 //
@@ -455,8 +442,8 @@ impl Allocator {
 
                     // We found only the start of what we need and will need to get
                     // more blocks from subsequent superblocks
-                    Err(num_head_blocks) => {
-                        head_blocks = NonZeroUsize::new(num_head_blocks);
+                    Err(head_blocks) => {
+                        num_head_blocks = head_blocks;
                         head_superblock_idx = superblock_idx;
                         remaining_blocks = num_blocks - num_head_blocks;
                         continue 'superblock_search;
@@ -475,8 +462,42 @@ impl Allocator {
         // Try to allocate from each hole, one by one
         for hole in hole_generator {
             match hole.kind {
-                HoleKind::SingleSuperblock(_mask) => unimplemented!(),
-                HoleKind::WithHeadBlocks(_head_blocks) => unimplemented!(),
+                // All blocks are within a single superblock, no transaction
+                HoleKind::SingleSuperblock(mask) => {
+                    match self.try_alloc_blocks(hole.head_superblock_idx,
+                                                mask) {
+                        Ok(()) => {
+                            // TODO: Allocated successfully!
+                            unimplemented!()
+                        },
+                        Err(_bitmap) => {
+                            // TODO: Failed to allocate
+                            unimplemented!()
+                        }
+                    }
+                },
+
+                // Blocks span more than one superblock, need a transaction
+                HoleKind::WithHeadBlocks(num_head_blocks) => {
+                    let num_superblocks =
+                        (num_blocks - num_head_blocks)
+                            / Self::blocks_per_superblock();
+                    match AllocTransaction::with_body(
+                        self,
+                        hole.head_superblock_idx + 1,
+                        num_superblocks
+                    ) {
+                        Ok(_transaction) => {
+                            // TODO: Successfully allocated body
+                            unimplemented!()
+                        },
+
+                        Err(_bad_superblock_idx) => {
+                            // TODO: Body allocation failed at index above
+                            unimplemented!()
+                        },
+                    }
+                },
             }
         }
 
