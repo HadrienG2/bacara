@@ -303,15 +303,27 @@ impl Allocator {
             Single { observed_bitmap: SuperblockBitmap },
 
             // ...during head allocation
+            //
+            // NOTE: Since we don't "look back" in order to keep execution time
+            //       bounded, a head allocation can only be turned into a
+            //       shorter head allocation by moving the hole forward in the
+            //       allocator's usage tracking bitmap. The number of remaining
+            //       head blocks is enough to tell if this is possible.
             Head { observed_head_blocks: usize },
 
             // ...during body superblock allocation
             Body {
                 bad_superblock_idx: usize,
-                observed_bitmap: SuperblockBitmap, // TODO: Is this the best?
+                // FIXME: Figure out if this is the best info we can provide.
+                observed_bitmap: SuperblockBitmap,
             },
 
             // ...during tail allocation
+            //
+            // NOTE: Since the allocation algorithm prioritizes dense packing by
+            //       allocating the head first, not having enough tail space is
+            //       game over for the current hole. So we need to know what's
+            //       ahead of the tail in order to search for a new hole.
             Tail { observed_bitmap: SuperblockBitmap },
         }
 
@@ -330,7 +342,7 @@ impl Allocator {
             //       perf hint so atomic loads/stores should be enough.
             //
             //       We could go one step further and store both a superblock
-            //       index and a block index withing that variable, via some
+            //       index and a block index within that variable, via some
             //       bit-packing trick : |superblock_idx|block_idx|. But this
             //       puts an implementation limitation on the amount of
             //       superblocks which we can track and in the end we're still
@@ -376,27 +388,27 @@ impl Allocator {
                             // It is, add it to our allocation and continue
                             remaining_blocks -= Self::blocks_per_superblock();
 
-                            // Search for more blocks or stop here as appropriate
+                            // Is the hole large enough yet?
                             if remaining_blocks > 0 {
+                                // Nope, continue searching for more
                                 continue 'superblock_search;
                             } else {
-                                // TODO: If that hole was concurrently filled,
-                                //       the caller must provide information on
-                                //       where it found a busy block so that we
-                                //       can resume the search in the right
-                                //       state.
+                                // Yes, send the hole for allocation
                                 let num_head_blocks =
                                     num_blocks % Self::blocks_per_superblock();
                                 let reply = co.yield_(Hole {
                                     head_superblock_idx,
-                                    kind: HoleKind::WithHeadBlocks { num_head_blocks },
+                                    kind: HoleKind::WithHeadBlocks {
+                                        num_head_blocks
+                                    },
                                 }).await;
-                                // TODO: What happens after yielding?
+
+                                // TODO: What happens on resume from bad alloc?
                                 unimplemented!()
                             }
                         } else {
-                            // Without a full extra superblock, the current hole is
-                            // too small and we must abandon that hole...
+                            // Without a full extra superblock, the current hole
+                            // is too small and we must abandon that hole...
                             remaining_blocks = num_blocks;
                         }
                     } else {
@@ -404,12 +416,6 @@ impl Allocator {
                         // superblock have enough room for remaining "tail" blocks?
                         if bitmap.free_tail_blocks() >= remaining_blocks {
                             // That's it, we found a large enough hole
-                            //
-                            // TODO: If that hole was concurrently filled,
-                            //       the caller must provide information on
-                            //       where it found a busy block so that we
-                            //       can resume the search in the right
-                            //       state.
                             //
                             // TODO: May want to centralize this w.r.t above
                             //       case into a single yield statement?
@@ -420,11 +426,12 @@ impl Allocator {
                                 head_superblock_idx,
                                 kind: HoleKind::WithHeadBlocks { num_head_blocks },
                             }).await;
-                            // TODO: What happens after yielding?
+
+                            // TODO: What happens on resume from bad alloc?
                             unimplemented!()
                         } else {
-                            // Without these extra blocks, the current hole is too
-                            // small and we must abandon that hole...
+                            // Without these extra blocks, the current hole is
+                            // too small and we must abandon that hole...
                             remaining_blocks = num_blocks;
                         }
                     }
@@ -433,8 +440,7 @@ impl Allocator {
                 // If control reaches this point, we're not currently
                 // investigating any hole and may start a new one.
                 debug_assert_eq!(remaining_blocks, num_blocks,
-                                 "Either head_blocks was not reset properly, or
-                                  hole search should have continued/broken loop");
+                                 "remaining_blocks was not reset properly");
 
                 // So, let's look for a suitably large hole in this superblock
                 let mut search_subidx = 0;
@@ -563,6 +569,10 @@ impl Allocator {
                     };
 
                     // Try to allocate the head of the hole (if any)
+                    //
+                    // FIXME: Failing to allocate the head should not mean a
+                    //        full rollback, as it should be possible to "just"
+                    //        retry with a shorter head and longer tail.
                     if num_head_blocks > 0 {
                         if let Err(observed_head_blocks) =
                             transaction.try_alloc_head(num_head_blocks)
