@@ -299,7 +299,6 @@ impl Allocator {
         generator_mut!(hole_generator, |co: Co<Hole>| async move {
             // Hole search status
             let mut remaining_blocks = num_blocks;
-            let mut num_head_blocks = 0;
             let mut head_superblock_idx = 0;
 
             // Search for a large enough hole in the bitmap
@@ -340,8 +339,8 @@ impl Allocator {
                 // for the next loop iteration, as 1/there may not be a next
                 // iteration and 2/the yield point has more info.
                 debug_assert_ne!(remaining_blocks, 0,
-                                 "Should have broken out of the search loop as
-                                  soon as enough blocks have been found");
+                                 "Should have yielded a Hole as soon as enough
+                                  contiguous blocks have been found");
 
                 // Read current superblock
                 let bitmap = superblock.load(Ordering::Relaxed);
@@ -349,7 +348,7 @@ impl Allocator {
                 // If we have already found free blocks previously, try to
                 // append at end of that known hole. On success, we'll jump to
                 // the next loop iteration, on failure, we'll drop that hole.
-                if num_head_blocks != 0 {
+                if remaining_blocks < num_blocks {
                     // Do we need a full extra superblock to pursue this track?
                     if remaining_blocks >= Self::blocks_per_superblock() {
                         // If so, is the current superblock fully free?
@@ -366,6 +365,8 @@ impl Allocator {
                                 //       where it found a busy block so that we
                                 //       can resume the search in the right
                                 //       state.
+                                let num_head_blocks =
+                                    num_blocks % Self::blocks_per_superblock();
                                 co.yield_(Hole {
                                     head_superblock_idx,
                                     kind: HoleKind::WithHeadBlocks(num_head_blocks),
@@ -379,7 +380,7 @@ impl Allocator {
                         } else {
                             // Without a full extra superblock, the current hole is
                             // too small and we must abandon that hole...
-                            num_head_blocks = 0;
+                            remaining_blocks = num_blocks;
                         }
                     } else {
                         // We need less than a superblock, does the current
@@ -395,6 +396,9 @@ impl Allocator {
                             //
                             // TODO: May want to centralize this w.r.t above
                             //       case into a single yield statement?
+                            let num_head_blocks =
+                                (num_blocks - remaining_blocks)
+                                    % Self::blocks_per_superblock();
                             co.yield_(Hole {
                                 head_superblock_idx,
                                 kind: HoleKind::WithHeadBlocks(num_head_blocks),
@@ -407,14 +411,14 @@ impl Allocator {
                         } else {
                             // Without these extra blocks, the current hole is too
                             // small and we must abandon that hole...
-                            num_head_blocks = 0;
+                            remaining_blocks = num_blocks;
                         }
                     }
                 }
 
                 // If control reaches this point, we're not currently investigating
                 // any hole and may start a new one.
-                debug_assert_eq!(num_head_blocks, 0,
+                debug_assert_eq!(remaining_blocks, num_blocks,
                                  "Either head_blocks was not reset properly, or
                                   hole search should have continued/broken loop");
 
@@ -442,8 +446,7 @@ impl Allocator {
 
                     // We found only the start of what we need and will need to get
                     // more blocks from subsequent superblocks
-                    Err(head_blocks) => {
-                        num_head_blocks = head_blocks;
+                    Err(num_head_blocks) => {
                         head_superblock_idx = superblock_idx;
                         remaining_blocks = num_blocks - num_head_blocks;
                         continue 'superblock_search;
