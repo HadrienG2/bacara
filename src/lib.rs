@@ -392,6 +392,7 @@ impl Allocator {
                                     kind: HoleKind::WithHeadBlocks { num_head_blocks },
                                 }).await;
                                 // TODO: What happens after yielding?
+                                unimplemented!()
                             }
                         } else {
                             // Without a full extra superblock, the current hole is
@@ -420,6 +421,7 @@ impl Allocator {
                                 kind: HoleKind::WithHeadBlocks { num_head_blocks },
                             }).await;
                             // TODO: What happens after yielding?
+                            unimplemented!()
                         } else {
                             // Without these extra blocks, the current hole is too
                             // small and we must abandon that hole...
@@ -604,13 +606,43 @@ impl Allocator {
         // memory that we are in the process of allocating.
         atomic::fence(Ordering::Acquire);
 
-        // TODO: Construct output pointer
-        // NOTE: Keep number of atomic operations to a minimum, even Relaxed ops
-        //       because LLVM is downright terrible at optimizing them. Cache
-        //       useful results of Relaxed loads instead of reloading.
-        // NOTE: Make sure to return a slice of the requested size, even if it
-        //       is not a multiple of the block size.
-        unimplemented!()
+        // Translate our allocation's first block index into an actual memory
+        // address within the allocator's backing store. This is safe because...
+        //
+        // - The pointer has to be in bounds, since we got the block coordinates
+        //   from the usage bitmap and by construction, there are no
+        //   out-of-bounds blocks in the bitmap (remember that we rounded the
+        //   requested allocation size to a multiple of the superblock size).
+        // - By construction, backing store capacity cannot be above
+        //   `isize::MAX`, so in-bounds offsets shouldn't go above that limit.
+        // - Since we're targeting an allocation that we got from the system
+        //   allocator, the address computation shouldn't overflow usize and
+        //   wrap around.
+        let target_start = unsafe {
+            self.backing_store_start
+                .as_ptr()
+                .add(first_block_idx * self.block_size())
+        };
+
+        // Add requested length (_not_ actual allocation length) to turn this
+        // start-of-allocation pointer into an allocated slice. This is safe
+        // to do because...
+        //
+        // - If our allocation algorithm is correct, no one else currently holds
+        //   a slice to this particular subset of the backing store.
+        // - If our allocation algorithm is correct, "size" bytes are in bounds
+        // - Lifetimes don't matter as we'll just turn this into a pointer
+        // - The backing store pointer cannot be null because the constructor
+        //   aborts if allocation fails by returning a null pointer.
+        // - There is no alignment problem as we're building a NonNull<u8>
+        // - "size" cannot overflow isize because the backing store capacity is
+        //   not allowed to do so.
+        let target_slice = unsafe {
+            std::slice::from_raw_parts_mut(target_start, size)
+        };
+
+        // Finally, we can build and return the output pointer
+        NonNull::new(target_slice as *mut _)
     }
 
     // TODO: Add a realloc_unbound() API, and a matching realloc() method to the

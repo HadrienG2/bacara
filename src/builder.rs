@@ -26,7 +26,7 @@ pub struct Builder {
     /// - Must be nonzero, per system allocator demands
     /// - Will be rounded to the next multiple of superblock size, to satisfy
     ///   allocator alignment needs and simplify the bitmap implementation.
-    /// - This rounding must not overflow usize::MAX
+    /// - This rounding must not overflow isize::MAX
     capacity: Option<usize>,
 }
 
@@ -104,9 +104,13 @@ impl Builder {
     ///
     /// The backing store capacity must not be zero, and the aforementioned
     /// rounding should not result in the requested capacity going above
-    /// the `usize::MAX` limit.
+    /// the `isize::MAX` limit. Yes, `isize`, you read that right. Rust pointers
+    /// have some mysterious limitations, among which the one that it is
+    /// forbidden to have pointer offsets that overflow `isize`.
     pub fn capacity(&mut self, capacity: usize) -> &mut Self {
         assert!(capacity != 0, "Backing store capacity must not be zero");
+        assert!(capacity < (std::isize::MAX as usize),
+                "Backing store capacity cannot overflow isize::MAX");
         assert!(self.capacity.replace(capacity).is_none(),
                 "Backing store capacity must only be set once");
         self
