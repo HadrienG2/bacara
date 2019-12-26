@@ -60,6 +60,8 @@ use crate::{
     transaction::AllocTransaction,
 };
 
+use genawaiter::sync::{Co, Gen};
+
 use std::{
     alloc::{self, Layout},
     mem::{self, MaybeUninit},
@@ -270,126 +272,6 @@ impl Allocator {
         // Convert requested size to a number of requested blocks
         let num_blocks = div_round_up(size, self.block_size());
 
-
-        // =================== EXPERIMENTAL HOLE SEARCH LOOP ===================
-
-        // TODO: If this experiment pans out, replace loop below carefully
-
-        // What kind of "hole" sequence of free blocks we just found
-        enum HoleKind {
-            // All block fit within a single superblock, and here's the
-            // allocation mask that you can use to access it.
-            SingleSuperblock(SuperblockBitmap),
-
-            // Number of head blocks which are available at the beginning of the
-            // allocation, or None if we found nothing so far.
-            WithHeadBlocks(Option<NonZeroUsize>),
-        }
-
-        // State variable to count how many contiguous free (super) blocks we
-        // have observed in previous blocks.
-        let mut found_blocks = 0;
-        let mut hole_kind = HoleKind::WithHeadBlocks(None);
-
-        // Search for a large enough hole in the bitmap
-        'block_search: for superblock in self.usage_bitmap.iter() {
-            // Loop invariants to guide development
-            debug_assert!(found_blocks < num_blocks,
-                          "Should have broken out of the search loop as soon as
-                           enough blocks have been found");
-
-            // Read current superblock
-            let bitmap = superblock.load(Ordering::Relaxed);
-
-            // If we have already found free blocks previously, try to add to
-            // the end of that known hole first. On success, we'll jump to the
-            // next loop iteration directly. On failure, we'll drop that hole.
-            if found_blocks > 0 {
-                // How many more blocks do we need, really?
-                let remaining_blocks = num_blocks - found_blocks;
-
-                // Do we need a full extra superblock to pursue this track?
-                if remaining_blocks >= Self::blocks_per_superblock() {
-                    // If so, is the current superblock fully free?
-                    if bitmap.is_empty() {
-                        // It is, we can add it to our allocation and continue
-                        found_blocks += Self::blocks_per_superblock();
-
-                        // Search for more blocks or stop here as appropriate
-                        if found_blocks < num_blocks {
-                            continue 'block_search;
-                        } else {
-                            break 'block_search;
-                        }
-                    } else {
-                        // Without a full extra superblock, the current hole is
-                        // too small and we must abandon that hole...
-                        found_blocks = 0;
-                    }
-                } else {
-                    // We need less than a superblock, does the current
-                    // superblock have enough room for remaining "tail" blocks?
-                    if bitmap.free_tail_blocks() >= remaining_blocks {
-                        // That's it, we found a large enough hole
-                        found_blocks = num_blocks;
-                        break 'block_search;
-                    } else {
-                        // Without these extra blocks, the current hole is too
-                        // small and we must abandon that hole...
-                        found_blocks = 0;
-                    }
-                }
-            }
-
-            // If control reaches this point, we're not currently investigating
-            // any hole and may start a new one.
-            debug_assert_eq!(found_blocks, 0,
-                             "Either found_blocks was not reset properly, or
-                              hole search should have continued/broken loop");
-
-            // So, let's look for a suitably large hole in our bitmap
-            //
-            // TODO: When we make the generator version, we must have a way to
-            //       continue the search through the active superblock in order
-            //       to yield more possibilities. This seems to call for adding
-            //       a start_idx parameter to search_free_blocks, and a
-            //       matching loop on this side.
-            //
-            match bitmap.search_free_blocks(num_blocks) {
-                // We found all we need within a single block
-                Ok(mask) => {
-                    found_blocks = num_blocks;
-                    hole_kind = HoleKind::SingleSuperblock(mask);
-                    break 'block_search;
-                }
-
-                // We found only the start of what we need and will need to get
-                // more blocks from subsequent superblocks
-                Err(num_head_blocks) => {
-                    found_blocks = num_head_blocks;
-                    hole_kind = HoleKind::WithHeadBlocks(
-                        NonZeroUsize::new(num_head_blocks)
-                    );
-                    continue 'block_search;
-                }
-            }
-        }
-
-        // If we haven't found enough blocks at the end of the scan, we failed
-        if found_blocks != num_blocks {
-            return None;
-        }
-
-        // TODO: Now make this a generator so that one can resume the search if
-        //       allocation isn't successful. Use genawaiter to work on stable.
-        //
-        // FIXME: There's probably also a more efficient way to do the search
-        //        which does not require querying head blocks until we're sure
-        //        that we have enough body blocks.
-
-        // =====================================================================
-
-
         // Determine how many complete superblocks must be allocated at minimum.
         // If we denote N = Self::blocks_per_superblock() and use "SB" as a
         // shorthand for superblock, the following schematics of possible
@@ -406,132 +288,197 @@ impl Allocator {
         let remaining_blocks =
             num_blocks - num_superblocks * Self::blocks_per_superblock();
 
-        // TODO: May want to add a special path for the num_blocks == 0 case
-        //       since the logic can be quite different (e.g. head/tail blocks
-        //       may not be necessary)
+        // This type describes what kind of hole we can find in the bitmap
+        enum HoleKind {
+            // For holes that fit within a single superblock, all we need is an
+            // allocation mask that we can pass to try_alloc_blocks.
+            SingleSuperblock(SuperblockBitmap),
 
-        // Look for that number of completely free supeblocks
-        //
-        // TODO: Use a state variable to avoid always scanning through the
-        //       superblock list from 0, instead picking up where the previous
-        //       thread left off. That variable does not need to be consistent,
-        //       it's just an optimization, so loads and stores are enough.
-        //
-        //       We could go one step further and store both a superblock index
-        //       and a block index withing that variable, via some bit-packing
-        //       trick : |superblock_idx|block_idx|.
-        //
-        //       Make sure not to update this variable early on durign search,
-        //       without going O(N), to avoid increasing the odd of an
-        //       allocation race between two threads by accidentally hinting
-        //       other threads to search where we're currently allocating. An
-        //       alternate way to avoid this would be to start search at a
-        //       random point in the usage bitmap, but that will have bad
-        //       fragmentation behavior.
-        //
-        //       Bear in mind that this will require some modulo arith instead
-        //       of plain superblock index addition and subtraction. Also, the
-        //       range of superblocks that we're looking for may straddle the
-        //       boundary between the first superblock we'll be looking at and
-        //       the last one.
-        //
-        //       This should wait on validity-checking tests, and on benchmarks
-        //       to study the impact and see if the complexity is worth it.
-        //
-        // This variable tracks our knowledge of the first superblock which
-        // _might_ be the beginning of a continuous free superblock sequence,
-        // bearing in mind that we haven't checked the current superblock.
-        let mut first_superblock_idx = 0;
-        'sb_search: for (superblock_idx, superblock) in
-            self.usage_bitmap.iter().enumerate()
-        {
-            // Have we found the right amount of free superblocks already?
-            // (can succeed on first iteration if none are needed)
-            if superblock_idx - first_superblock_idx == num_superblocks {
-                // Try to allocate these superblocks as our allocation's body
-                let mut transaction = match AllocTransaction::with_body(
-                    self,
-                    first_superblock_idx,
-                    num_superblocks
-                ) {
-                    // On success, bubble up transaction object
-                    Ok(transaction) => transaction,
-
-                    // On failure, use what we learned about the superblock
-                    // landscape to guide the remainder of our search.
-                    Err(bad_superblock_idx) => {
-                        first_superblock_idx = bad_superblock_idx + 1;
-                        continue 'sb_search;
-                    }
-                };
-
-                // Alright, we have allocated body superblocks, now let's try to
-                // allocate head and tail blocks.
-                //
-                // We'll start by trying to allocate as much as possible on the
-                // head block's side (that is necessary to guarantee a compact
-                // allocation layout in a classing mostly-FIFO
-                // allocation/liberation scenario), then gradually revise that
-                // expectation towards zero head blocks as our failures tell us.
-                //
-                let (mut num_head_blocks, min_head_blocks) =
-                    // Do we need to have a tail?
-                    if remaining_blocks >= Self::blocks_per_superblock() {
-                        // If so, we start to push as much as possible on the
-                        // head side, and stop when even a fully allocated tail
-                        // superblock wouldn't be enough.
-                        (Self::blocks_per_superblock() - 1,
-                         remaining_blocks - Self::blocks_per_superblock())
-                    } else {
-                        // If not, we start by pushing everything on the head
-                        // side, and stop when we have moved everything to the
-                        // tail side.
-                        (remaining_blocks, 0)
-                    };
-                'head_search: while num_head_blocks >= min_head_blocks {
-                    // Try to allocate the desired number of head blocks
-                    match transaction.try_alloc_head(num_head_blocks) {
-                        // We did it, now let's try to allocate the remaining
-                        // blocks as tail blocks
-                        Ok(_) => unimplemented!(),
-
-                        // We didn't manage, but now we know how many head
-                        // blocks we actually have. Check if that's enough
-                        Err(actual_head_blocks) => unimplemented!(),
-                    }
-                }
-
-                // TODO: Try to allocate neighboring blocks, searching for all
-                //       acceptable bit patterns with `remaining_blocks` bits.
-                //
-                //       Bear in mind that num_superblocks == 0 is a special
-                //       case that allows more bit patterns (no need to touch
-                //       edge of previously allocated superblocks).
-                //
-                //       Bear in mind that superblock_idx == 0 and
-                //       usage_bitmap.len() will require special handling as
-                //       there is no preceding/following neighbor.
-                //
-                //       Do not forget to rollback superblock allocations and
-                //       increment first_free_superblock_idx on failure. I
-                //       wonder if it would be a good idea to handle those
-                //       rollbacks using some sort of RAII object?
-                unimplemented!()
-            } else {
-                // We need more free superblocks, is the current one free?
-                // TODO: Extract into a method
-                if !superblock.load(Ordering::Relaxed).is_empty() {
-                    // If not, restart superblock search at the next loop index
-                    first_superblock_idx = superblock_idx + 1;
-                }
-            }
+            // For holes that span multiple superblocks, we need to know the
+            // numbers of head blocks (if any).
+            WithHeadBlocks(Option<NonZeroUsize>),
         }
 
-        // TODO: Handle case where last free superblock is at end of the loop,
-        //       will require extracting above allocation logic into a function
-        //       or closure to avoid duplicating it
+        // Add some position metadata to that and we should be good to go
+        struct Hole {
+            // Position of the (beginning of the) hole
+            head_superblock_idx: usize,
 
-        // TODO: Handle the case where we failed to allocate, exiting here
+            // Kind of hole we're dealing with + kind-specific data
+            kind: HoleKind,
+        }
+
+        // This generator searches for and produces holes in the bitmap
+        let hole_generator = Gen::new(|co: Co<Hole>| async move {
+            // Hole search status
+            let mut remaining_blocks = num_blocks;
+            let mut head_blocks = None;
+            let mut head_superblock_idx = 0;
+
+            // Search for a large enough hole in the bitmap
+            //
+            // TODO: Always starting at the beginning isn't nice because we keep
+            //       hammering the same first superblocks while latter ones are
+            //       most likely to be free. Consider adding a state variable to
+            //       pick up at the superblock which we left off. It's just a
+            //       perf hint so atomic loads/stores should be enough.
+            //
+            //       We could go one step further and store both a superblock
+            //       index and a block index withing that variable, via some
+            //       bit-packing trick : |superblock_idx|block_idx|. But this
+            //       puts an implementation limitation on the amount of
+            //       superblocks which we can track and in the end we're still
+            //       hitting the same superblock, so it may not be worthwhile.
+            //
+            //       We should update this state as quickly as possible, so that
+            //       other threads move away from the hole that we're looking
+            //       at, but not too often as otherwise the state variable would
+            //       be hammered too hard.
+            //
+            //       Random index selection isn't a good strategy here as it
+            //       will lead to fragmentation, which will make large
+            //       allocations fail all the time.
+            //
+            //       Generally speaking, this shouldn't be investigated before
+            //       we have benchmarks, first because the perf tradeoffs are
+            //       subtle and second because it will split the bitmap in two
+            //       halves that join between the end of the second half and the
+            //       beginning of the first half, and the complexity must be
+            //       justified by some proven substantial perf benefit.
+            //
+            'superblock_search: for (superblock_idx, superblock) in
+                self.usage_bitmap.iter().enumerate()
+            {
+                // We must yield as soon as a suitable hole is found, not wait
+                // for the next loop iteration, as 1/there may not be a next
+                // iteration and 2/the yield point has more info.
+                debug_assert_ne!(remaining_blocks, 0,
+                                 "Should have broken out of the search loop as
+                                  soon as enough blocks have been found");
+
+                // Read current superblock
+                let bitmap = superblock.load(Ordering::Relaxed);
+
+                // If we have already found free blocks previously, try to
+                // append at end of that known hole. On success, we'll jump to
+                // the next loop iteration, on failure, we'll drop that hole.
+                if head_blocks.is_some() {
+                    // Do we need a full extra superblock to pursue this track?
+                    if remaining_blocks >= Self::blocks_per_superblock() {
+                        // If so, is the current superblock fully free?
+                        if bitmap.is_empty() {
+                            // It is, add it to our allocation and continue
+                            remaining_blocks -= Self::blocks_per_superblock();
+
+                            // Search for more blocks or stop here as appropriate
+                            if remaining_blocks > 0 {
+                                continue 'superblock_search;
+                            } else {
+                                // TODO: If that hole was concurrently filled,
+                                //       the caller must provide information on
+                                //       where it found a busy block so that we
+                                //       can resume the search in the right
+                                //       state.
+                                co.yield_(Hole {
+                                    head_superblock_idx,
+                                    kind: HoleKind::WithHeadBlocks(head_blocks),
+                                    // TODO: Give more info, including about
+                                    //       extra tail blocks? Or just
+                                    //       assume that allocator is going
+                                    //       to find out?
+                                }).await;
+                                // TODO: What happens after yielding?
+                            }
+                        } else {
+                            // Without a full extra superblock, the current hole is
+                            // too small and we must abandon that hole...
+                            head_blocks = None;
+                        }
+                    } else {
+                        // We need less than a superblock, does the current
+                        // superblock have enough room for remaining "tail" blocks?
+                        if bitmap.free_tail_blocks() >= remaining_blocks {
+                            // That's it, we found a large enough hole
+                            //
+                            // TODO: If that hole was concurrently filled,
+                            //       the caller must provide information on
+                            //       where it found a busy block so that we
+                            //       can resume the search in the right
+                            //       state.
+                            //
+                            // TODO: May want to centralize this w.r.t above
+                            //       case into a single yield statement?
+                            co.yield_(Hole {
+                                head_superblock_idx,
+                                kind: HoleKind::WithHeadBlocks(head_blocks),
+                                // TODO: Give more info, including about
+                                //       extra tail blocks? Or just
+                                //       assume that allocator is going
+                                //       to find out?
+                            }).await;
+                            // TODO: What happens after yielding?
+                        } else {
+                            // Without these extra blocks, the current hole is too
+                            // small and we must abandon that hole...
+                            head_blocks = None;
+                        }
+                    }
+                }
+
+                // If control reaches this point, we're not currently investigating
+                // any hole and may start a new one.
+                debug_assert!(head_blocks.is_none(),
+                              "Either head_blocks was not reset properly, or
+                               hole search should have continued/broken loop");
+
+                // So, let's look for a suitably large hole in our bitmap
+                //
+                // TODO: When we make the generator version, we must have a way to
+                //       continue the search through the active superblock in order
+                //       to yield more possibilities. This seems to call for adding
+                //       a start_idx parameter to search_free_blocks, and a
+                //       matching loop on this side.
+                //
+                match bitmap.search_free_blocks(num_blocks) {
+                    // We found all we need within a single block
+                    Ok(mask) => {
+                        co.yield_(Hole {
+                            head_superblock_idx: superblock_idx,
+                            kind: HoleKind::SingleSuperblock(mask),
+                        }).await;
+                        // TODO: If search resumes, continue searching for free
+                        //       blocks with the same superblock.
+                        //
+                        // NOTE: Maybe the code that tried to allocate could
+                        //       pass back some info about what went wrong?
+                    }
+
+                    // We found only the start of what we need and will need to get
+                    // more blocks from subsequent superblocks
+                    Err(num_head_blocks) => {
+                        head_blocks = NonZeroUsize::new(num_head_blocks);
+                        head_superblock_idx = superblock_idx;
+                        remaining_blocks = num_blocks - num_head_blocks;
+                        continue 'superblock_search;
+                    }
+                }
+            }
+
+            // NOTE: If we didn't find enough blocks at the end of the bitmap,
+            //       the generator will return (), signalling end of iteration.
+        });
+
+        // FIXME: There's probably also a more efficient way to do the search
+        //        which does not require querying head blocks until we're sure
+        //        that we have enough body blocks.
+
+        // Try to allocate from each hole, one by one
+        for hole in hole_generator {
+            match hole.kind {
+                HoleKind::SingleSuperblock(_mask) => unimplemented!(),
+                HoleKind::WithHeadBlocks(_head_blocks) => unimplemented!(),
+            }
+        }
 
         // Make sure that the previous reads from the allocation bitmap are
         // ordered before any subsequent access to the buffer by the current
