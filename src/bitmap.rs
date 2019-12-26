@@ -90,22 +90,19 @@ impl SuperblockBitmap {
     /// Search for a hole of N contiguous blocks, as early as possible in the
     /// superblock to keep the bitmap as densely populated as possible.
     ///
-    /// On success, return the allocation mask associated with that hole. On
-    /// failure, return the size of a possible head allocation.
+    /// On success, return the block index at which a hole was found. On
+    /// failure, return the number of free trailing blocks that could be used
+    /// as the head of a multi-superblock allocation.
     pub fn search_free_blocks(
         &self,
+        start_idx: usize,
         num_blocks: usize
-    ) -> Result<SuperblockBitmap, usize> {
+    ) -> Result<usize, usize> {
         // Prepare a working copy of the bitmap's integer representation
-        let mut bits = self.0;
-
-        // TODO: As a future optimization, can check if
-        //       `num_blocks > bits.count_zeros()`. This should be useful on
-        //       any CPU with a native popcnt instruction, including modern
-        //       Intel CPUs when building with `-C target-cpu=native`.
+        let mut bits = self.0 >> start_idx;
 
         // Keep track of the index at which we're currently looking for holes
-        let mut block_idx = 0;
+        let mut block_idx = start_idx;
         loop {
             // How many blocks have we not looked at yet?
             let remaining_blocks =
@@ -125,7 +122,7 @@ impl SuperblockBitmap {
 
             // Have we found a large enough hole?
             if free_blocks as usize >= num_blocks {
-                return Ok(Self::new_mask(block_idx, num_blocks));
+                return Ok(block_idx);
             }
 
             // If not, skip the hole and the block that ended it
