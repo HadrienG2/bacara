@@ -412,10 +412,10 @@ impl Allocator {
                             remaining_blocks = num_blocks;
                         }
                     } else {
-                        // We need less than a superblock, does the current
-                        // superblock have enough room for remaining "tail" blocks?
+                        // We need less than a superblock, does the current one
+                        // have enough room for remaining "tail" blocks?
                         if bitmap.free_tail_blocks() >= remaining_blocks {
-                            // That's it, we found a large enough hole
+                            // Yes, send the hole for allocation
                             //
                             // TODO: May want to centralize this w.r.t above
                             //       case into a single yield statement?
@@ -424,7 +424,9 @@ impl Allocator {
                                     % Self::blocks_per_superblock();
                             let reply = co.yield_(Hole {
                                 head_superblock_idx,
-                                kind: HoleKind::WithHeadBlocks { num_head_blocks },
+                                kind: HoleKind::WithHeadBlocks {
+                                    num_head_blocks
+                                },
                             }).await;
 
                             // TODO: What happens on resume from bad alloc?
