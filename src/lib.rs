@@ -393,7 +393,7 @@ impl Allocator {
                         // Here's why this computation is correct:
                         // - At the start of allocation, we remove the head
                         //   blocks from remaining_blocks, so what is left is
-                        //   an integer number of superblocks + some tail blocks
+                        //   an integer number of superblocks + the tail blocks
                         // - Allocation can only proceed beyond that by removing
                         //   a full superblock from remaining_blocks.
                         let num_tail_blocks =
@@ -543,8 +543,8 @@ impl Allocator {
                         // On success, bubble up the transaction object
                         Ok(transaction) => transaction,
 
-                        // On failure, bubble up the superblock on which the
-                        // allocation failed and (TODO) the bit pattern that was
+                        // On failure, send back the superblock on which the
+                        // allocation failed and the bit pattern that was
                         // observed on that superblock.
                         Err((bad_superblock_idx, observed_bitmap)) => {
                             resume_arg = BadAlloc::Body {
@@ -560,6 +560,12 @@ impl Allocator {
                     // FIXME: Failing to allocate the head should not mean a
                     //        full rollback, as it should be possible to "just"
                     //        retry with a shorter head and longer tail.
+                    //
+                    // NOTE: This can lead us to allocate one extra body
+                    //       superblock in this kind of scenario:
+                    //       |0011|1111|1110| -> |0000|1111|1111|1000|
+                    //       When that happens, the hole search coroutine will
+                    //       need to skip to the next block.
                     if num_head_blocks > 0 {
                         if let Err(observed_head_blocks) =
                             transaction.try_alloc_head(num_head_blocks)
