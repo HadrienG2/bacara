@@ -103,8 +103,7 @@ impl<'allocator> AllocTransaction<'allocator> {
     ///
     /// On failure, will return how many head blocks are actually available
     /// before the first body superblock.
-    pub fn try_alloc_head(&mut self,
-                          num_blocks: usize) -> Result<&mut Self, usize> {
+    pub fn try_alloc_head(&mut self, num_blocks: usize) -> Result<(), usize> {
         // Check transaction object consistency
         self.debug_check_invariants();
 
@@ -127,25 +126,50 @@ impl<'allocator> AllocTransaction<'allocator> {
 
         // On success, add the head blocks to the transaction
         self.num_head_blocks = num_blocks;
-        Ok(self)
+        Ok(())
+    }
+
+    /// Query the index of the superblock after the end of the body, where extra
+    /// body superblocks or tail blocks would be allocated.
+    pub fn body_end_idx(&self) -> usize {
+        self.body_start_idx + self.num_body_superblocks
+    }
+
+    /// Try to extend the body by one superblock
+    ///
+    /// On failure, will return the bit pattern that was actually observed on
+    /// that superblock.
+    pub fn try_extend_body(&mut self) -> Result<(), SuperblockBitmap> {
+        // Check transaction object consistency
+        self.debug_check_invariants();
+
+        // Check that there's room for an extra superblock
+        let num_body_superblocks =
+            self.allocator.capacity() / self.allocator.superblock_size();
+        debug_assert!(self.body_end_idx() < num_body_superblocks,
+                      "No superblock available for body extension");
+
+        // Try to allocate, and on failure return actual bit pattern
+        self.allocator.try_alloc_superblock(self.body_end_idx())?;
+
+        // On success, add the extra body superblock to the transaction
+        self.num_body_superblocks += 1;
+        Ok(())
     }
 
     /// Try to allocate N "tail" blocks, falling after the body superblocks.
     ///
     /// On failure, will return the bit pattern that was actually observed on
     /// the last body superblock.
-    pub fn try_alloc_tail(
-        &mut self,
-        num_blocks: usize
-    ) -> Result<&mut Self, SuperblockBitmap> {
+    pub fn try_alloc_tail(&mut self,
+                          num_blocks: usize) -> Result<(), SuperblockBitmap> {
         // Check transaction object consistency
         self.debug_check_invariants();
 
         // Check that there's room for a tail allocation
-        let body_end_idx = self.body_start_idx + self.num_body_superblocks;
         let num_body_superblocks =
             self.allocator.capacity() / self.allocator.superblock_size();
-        debug_assert!(body_end_idx < num_body_superblocks,
+        debug_assert!(self.body_end_idx() < num_body_superblocks,
                       "No superblock available for tail allocation");
         debug_assert_eq!(self.num_tail_blocks, 0,
                          "Tail allocation may only be performed once");
@@ -157,12 +181,12 @@ impl<'allocator> AllocTransaction<'allocator> {
         // Try to allocate, and on failure return how many tail blocks are
         // actually available (leading zeros in the tail superblock)
         self.allocator
-            .try_alloc_blocks(body_end_idx,
+            .try_alloc_blocks(self.body_end_idx(),
                               SuperblockBitmap::new_tail_mask(num_blocks))?;
 
         // On success, add the tail blocks to the transaction
         self.num_tail_blocks = num_blocks;
-        Ok(self)
+        Ok(())
     }
 
     /// Number of blocks which were allocated as part of this transaction

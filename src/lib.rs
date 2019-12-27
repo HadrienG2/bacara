@@ -298,33 +298,13 @@ impl Allocator {
         // The hole search is resumed when allocation fails...
         #[derive(Clone, Copy, Debug)]
         #[must_use]
-        enum BadAlloc {
-            // ...during single-superblock allocation
-            Single { observed_bitmap: SuperblockBitmap },
+        struct BadAlloc {
+            // ...at this superblock
+            bad_superblock_idx: usize,
 
-            // ...during head allocation
-            //
-            // NOTE: Since we don't "look back" in order to keep execution time
-            //       bounded, a head allocation can only be turned into a
-            //       shorter head allocation by moving the hole forward in the
-            //       allocator's usage tracking bitmap. The number of remaining
-            //       head blocks is enough to tell if this is possible.
-            Head { observed_head_blocks: usize },
-
-            // ...during body superblock allocation
-            Body {
-                bad_superblock_idx: usize,
-                // FIXME: Figure out if this is the best info we can provide.
-                observed_bitmap: SuperblockBitmap,
-            },
-
-            // ...during tail allocation
-            //
-            // NOTE: Since the allocation algorithm prioritizes dense packing by
-            //       allocating the head first, not having enough tail space is
-            //       game over for the current hole. So we need to know what's
-            //       ahead of the tail in order to search for a new hole.
-            Tail { observed_bitmap: SuperblockBitmap },
+            // ...because of this bit pattern
+            // FIXME: Figure out if this is the best info we can provide.
+            observed_bitmap: SuperblockBitmap,
         }
 
         // This generator searches for and produces holes in the bitmap
@@ -394,8 +374,9 @@ impl Allocator {
                         // - At the start of allocation, we remove the head
                         //   blocks from remaining_blocks, so what is left is
                         //   an integer number of superblocks + the tail blocks
-                        // - Allocation can only proceed beyond that by removing
-                        //   a full superblock from remaining_blocks.
+                        // - Allocation can only proceed to the end by removing
+                        //   full superblocks from remaining_blocks, so that
+                        //   property is preserved over time.
                         let num_tail_blocks =
                             remaining_blocks % Self::blocks_per_superblock();
 
@@ -410,6 +391,8 @@ impl Allocator {
 
                         // TODO: Analyze allocation failure and update
                         //       head_superblock_idx and remaining_blocks.
+                        //       Beware that the bad superblock may be the
+                        //       one after the current one.
                         unimplemented!();
                     } else {
                         // The hole is not large enough yet, can we continue?
@@ -445,14 +428,11 @@ impl Allocator {
 
                             // On failure, update our view of the current
                             // superblock's allocation bitmap...
-                            if let BadAlloc::Single { observed_bitmap } = reply {
-                                bitmap = observed_bitmap;
-                            } else {
-                                panic!(
-                                    "Invalid single-block alloc reply: {:?}",
-                                    reply
-                                );
-                            }
+                            debug_assert_eq!(
+                                reply.bad_superblock_idx, superblock_idx,
+                                "Invalid single-block alloc reply"
+                            );
+                            bitmap = reply.observed_bitmap;
 
                             // ...and resume the search one bit after where we
                             // found the previous hole. This ensures that hole
@@ -484,7 +464,8 @@ impl Allocator {
 
         // Every time we resume the hole generator, we pass in this argument.
         // The initial value doesn't matter as it will be ignored.
-        let mut resume_arg = BadAlloc::Single {
+        let mut resume_arg = BadAlloc {
+            bad_superblock_idx: 0,
             observed_bitmap: SuperblockBitmap::EMPTY,
         };
 
@@ -518,21 +499,24 @@ impl Allocator {
                         // We failed to allocate this hole, but we got an
                         // updated view of the bit pattern for this superblock
                         Err(observed_bitmap) => {
-                            resume_arg = BadAlloc::Single { observed_bitmap };
+                            resume_arg = BadAlloc {
+                                bad_superblock_idx: hole.head_superblock_idx,
+                                observed_bitmap,
+                            };
                             continue 'alloc_attempts;
                         }
                     }
                 },
 
                 // Blocks span more than one superblock, need a transaction
-                HoleKind::WithTailBlocks { num_tail_blocks } => {
+                HoleKind::WithTailBlocks { mut num_tail_blocks } => {
                     // Given the number of head blocks, we can find all other
                     // parameters of the active transaction.
-                    let remaining_blocks = num_blocks - num_tail_blocks;
+                    let other_blocks = num_blocks - num_tail_blocks;
                     let num_body_superblocks =
-                        remaining_blocks / Self::blocks_per_superblock();
-                    let num_head_blocks =
-                        remaining_blocks % Self::blocks_per_superblock();
+                        other_blocks / Self::blocks_per_superblock();
+                    let mut num_head_blocks =
+                        other_blocks % Self::blocks_per_superblock();
 
                     // Try to allocate the body of the transaction
                     let mut transaction = match AllocTransaction::with_body(
@@ -543,11 +527,9 @@ impl Allocator {
                         // On success, bubble up the transaction object
                         Ok(transaction) => transaction,
 
-                        // On failure, send back the superblock on which the
-                        // allocation failed and the bit pattern that was
-                        // observed on that superblock.
+                        // On failure, send back what went wrong
                         Err((bad_superblock_idx, observed_bitmap)) => {
-                            resume_arg = BadAlloc::Body {
+                            resume_arg = BadAlloc {
                                 bad_superblock_idx,
                                 observed_bitmap,
                             };
@@ -556,24 +538,32 @@ impl Allocator {
                     };
 
                     // Try to allocate the head of the hole (if any)
-                    //
-                    // FIXME: Failing to allocate the head should not mean a
-                    //        full rollback, as it should be possible to "just"
-                    //        retry with a shorter head and longer tail.
-                    //
-                    // NOTE: This can lead us to allocate one extra body
-                    //       superblock in this kind of scenario:
-                    //       |0011|1111|1110| -> |0000|1111|1111|1000|
-                    //       When that happens, the hole search coroutine will
-                    //       need to skip to the next block.
-                    if num_head_blocks > 0 {
+                    while num_head_blocks > 0 {
                         if let Err(observed_head_blocks) =
                             transaction.try_alloc_head(num_head_blocks)
                         {
-                            resume_arg = BadAlloc::Head {
-                                observed_head_blocks,
+                            // On head allocation failure, try to "move the hole
+                            // forward", pushing more blocks to the tail.
+                            num_tail_blocks +=
+                                num_head_blocks - observed_head_blocks;
+                            num_head_blocks = observed_head_blocks;
+                        }
+                    }
+
+                    // If needed, allocate one more body superblock.
+                    // This can happen as a result of moving the hole forward:
+                    //     |0011|1111|1110|0000| -> |0000|1111|1111|1000|
+                    if num_tail_blocks >= Self::blocks_per_superblock() {
+                        if let Err(observed_bitmap) =
+                            transaction.try_extend_body()
+                        {
+                            resume_arg = BadAlloc {
+                                bad_superblock_idx: transaction.body_end_idx(),
+                                observed_bitmap,
                             };
                             continue 'alloc_attempts;
+                        } else {
+                            num_tail_blocks -= Self::blocks_per_superblock();
                         }
                     }
 
@@ -582,7 +572,8 @@ impl Allocator {
                         if let Err(observed_bitmap) =
                             transaction.try_alloc_tail(num_tail_blocks)
                         {
-                            resume_arg = BadAlloc::Tail {
+                            resume_arg = BadAlloc {
+                                bad_superblock_idx: transaction.body_end_idx(),
                                 observed_bitmap,
                             };
                             continue 'alloc_attempts;
