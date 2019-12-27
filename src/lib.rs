@@ -282,8 +282,8 @@ impl Allocator {
             SingleSuperblock { first_block_subidx: usize },
 
             // For holes that span multiple superblocks, we need to know the
-            // numbers of head blocks (if any).
-            WithHeadBlocks { num_head_blocks: usize },
+            // numbers of tail blocks (if any).
+            WithTailBlocks { num_tail_blocks: usize },
         }
 
         // Add some position metadata to that and we should be good to go
@@ -378,62 +378,47 @@ impl Allocator {
                 let mut bitmap = superblock.load(Ordering::Relaxed);
 
                 // If we have already found free blocks previously, try to
-                // append at end of that known hole. On success, we'll jump to
+                // append at end of that known hole. On success, we'll skip to
                 // the next loop iteration, on failure, we'll drop that hole.
                 if remaining_blocks < num_blocks {
-                    // Do we need a full extra superblock to pursue this track?
-                    if remaining_blocks >= Self::blocks_per_superblock() {
-                        // If so, is the current superblock fully free?
-                        if bitmap.is_empty() {
-                            // It is, add it to our allocation and continue
-                            remaining_blocks -= Self::blocks_per_superblock();
-
-                            // Is the hole large enough yet?
-                            if remaining_blocks > 0 {
-                                // Nope, continue searching for more
-                                continue 'superblock_search;
-                            } else {
-                                // Yes, send the hole for allocation
-                                let num_head_blocks =
-                                    num_blocks % Self::blocks_per_superblock();
-                                let reply = co.yield_(Hole {
-                                    head_superblock_idx,
-                                    kind: HoleKind::WithHeadBlocks {
-                                        num_head_blocks
-                                    },
-                                }).await;
-
-                                // TODO: What happens on resume from bad alloc?
-                                unimplemented!()
-                            }
-                        } else {
-                            // Without a full extra superblock, the current hole
-                            // is too small and we must abandon that hole...
-                            remaining_blocks = num_blocks;
-                        }
+                    // How many blocks can we append at the end of the hole?
+                    let found_blocks = if bitmap.is_empty() {
+                        Self::blocks_per_superblock()
                     } else {
-                        // We need less than a superblock, does the current one
-                        // have enough room for remaining "tail" blocks?
-                        if bitmap.free_tail_blocks() >= remaining_blocks {
-                            // Yes, send the hole for allocation
-                            //
-                            // TODO: May want to centralize this w.r.t above
-                            //       case into a single yield statement?
-                            let num_head_blocks =
-                                (num_blocks - remaining_blocks)
-                                    % Self::blocks_per_superblock();
-                            let reply = co.yield_(Hole {
-                                head_superblock_idx,
-                                kind: HoleKind::WithHeadBlocks {
-                                    num_head_blocks
-                                },
-                            }).await;
+                        bitmap.free_tail_blocks()
+                    };
 
-                            // TODO: What happens on resume from bad alloc?
-                            unimplemented!()
+                    // Have we found a big enough hole yet?
+                    if found_blocks >= remaining_blocks {
+                        // Here's why this computation is correct:
+                        // - At the start of allocation, we remove the head
+                        //   blocks from remaining_blocks, so what is left is
+                        //   an integer number of superblocks + some tail blocks
+                        // - Allocation can only proceed beyond that by removing
+                        //   a full superblock from remaining_blocks.
+                        let num_tail_blocks =
+                            remaining_blocks % Self::blocks_per_superblock();
+
+                        // So now we can output the hole. On failure, we'll get
+                        // back what exactly went wrong.
+                        let reply = co.yield_(Hole {
+                            head_superblock_idx,
+                            kind: HoleKind::WithTailBlocks {
+                                num_tail_blocks
+                            },
+                        }).await;
+
+                        // TODO: Analyze allocation failure and update
+                        //       head_superblock_idx and remaining_blocks.
+                        unimplemented!();
+                    } else {
+                        // The hole is not large enough yet, can we continue?
+                        if bitmap.is_empty() {
+                            // Yes, there is no obstacle in the way
+                            remaining_blocks -= Self::blocks_per_superblock();
+                            continue 'superblock_search;
                         } else {
-                            // Without these extra blocks, the current hole is
-                            // too small and we must abandon that hole...
+                            // No, we must abandon that hole and start another
                             remaining_blocks = num_blocks;
                         }
                     }
@@ -540,13 +525,13 @@ impl Allocator {
                 },
 
                 // Blocks span more than one superblock, need a transaction
-                HoleKind::WithHeadBlocks { num_head_blocks } => {
+                HoleKind::WithTailBlocks { num_tail_blocks } => {
                     // Given the number of head blocks, we can find all other
                     // parameters of the active transaction.
-                    let remaining_blocks = num_blocks - num_head_blocks;
+                    let remaining_blocks = num_blocks - num_tail_blocks;
                     let num_body_superblocks =
                         remaining_blocks / Self::blocks_per_superblock();
-                    let num_tail_blocks =
+                    let num_head_blocks =
                         remaining_blocks % Self::blocks_per_superblock();
 
                     // Try to allocate the body of the transaction
