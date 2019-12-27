@@ -727,11 +727,6 @@ impl Allocator {
                             SuperblockBitmap::new_tail_mask(remaining_len));
     }
 
-    // TODO: Provide an API which creates an AllocTransaction with a certain
-    //       body superblock range, or returns the index of the first superblock
-    //       that wasn't fully free (= 0) as an error.
-    //       It could be called try_alloc_superblocks() or something similar
-
     /// Try to atomically allocate a full superblock
     ///
     /// Returns observed superblock allocation bitfield on failure.
