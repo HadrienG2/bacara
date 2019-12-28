@@ -53,6 +53,7 @@
 
 mod bitmap;
 mod builder;
+mod holes;
 mod transaction;
 
 use crate::{
