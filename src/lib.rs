@@ -362,7 +362,8 @@ impl Allocator {
                 if remaining_blocks < num_blocks {
                     // How many blocks can we append at the end of the hole?
                     //
-                    // TODO: Cross-check if this optimization is effective.
+                    // TODO: Cross-check if this optimization is effective,
+                    //       maybe bitmap.free_blocks_at_start() is all we need.
                     let found_blocks = if bitmap.is_empty() {
                         Self::blocks_per_superblock()
                     } else {
@@ -371,13 +372,10 @@ impl Allocator {
 
                     // Have we found a big enough hole yet?
                     if found_blocks >= remaining_blocks {
-                        // Here's why this computation is correct:
-                        // - At the start of allocation, we remove the head
-                        //   blocks from remaining_blocks, so what is left is
-                        //   an integer number of superblocks + the tail blocks
-                        // - Allocation can only proceed to the end by removing
-                        //   full superblocks from remaining_blocks, so that
-                        //   property is preserved over time.
+                        // The current superblock is preceded by an integer
+                        // number of fully free superblocks (as one that's not
+                        // fully free would "break the chain"), possibly
+                        // preceded by some lone head blocks.
                         let previous_blocks = num_blocks - remaining_blocks;
                         let num_head_blocks =
                             previous_blocks % Self::blocks_per_superblock();
@@ -404,6 +402,17 @@ impl Allocator {
                                 num_blocks - num_head_blocks
                                     - num_prev_superblocks
                                         * Self::blocks_per_superblock();
+
+                            // Since the allocation code proceeds is allowed to
+                            // scan the hole forward, it should not be possible
+                            // to end up in a scenario where we can answer the
+                            // request with another part of the same hole.
+                            //
+                            // NOTE: We may not need this property anymore once
+                            //       hole search is extracted into its own
+                            //       primitive with dedicated methods for
+                            //       querying the next hole and providing (new)
+                            //       information about a certain superblock.
                             debug_assert!(
                                 remaining_blocks < Self::blocks_per_superblock(),
                                 "Allocation code should have tried harder"
@@ -442,7 +451,7 @@ impl Allocator {
 
                 // So, let's look for a suitably large hole in this superblock
                 let mut search_subidx = 0;
-                while search_subidx < Self::blocks_per_superblock() {
+                'head_search: while search_subidx < Self::blocks_per_superblock() {
                     match bitmap.search_free_blocks(search_subidx, num_blocks) {
                         // We found all we need within a single superblock
                         Ok(first_block_subidx) => {
@@ -465,6 +474,7 @@ impl Allocator {
                             // search completes in a finite number of steps even
                             // when the allocator is heavily contended.
                             search_subidx = first_block_subidx + 1;
+                            continue 'head_search;
                         }
 
                         // We only found some head blocks (maybe none). Search
