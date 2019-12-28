@@ -35,8 +35,8 @@ pub struct HoleSearch<SuperblockIter>
     current_block_subidx: usize,
 }
 
-// TODO: impl Iterator<Item=Hole> for HoleSearch
-// TODO: Add method to feed back information from a bad alloc (bad superblock
-//       idx + bitmap observed there)
 // TODO: Add constructor. Constructor reads the first superblock from the iter,
-//       which is safe to unwrap because allocator capacity can't be zero.
+//       which is safe to unwrap because allocator capacity can't be zero, and
+//       returns a Self _and_ the first hole.
+// TODO: Add method that feeds back information from a bad alloc (bad superblock
+//       idx + bitmap observed there) and tries to yield another hole.
