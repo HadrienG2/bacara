@@ -276,26 +276,24 @@ impl Allocator {
         let num_blocks = div_round_up(size, self.block_size());
 
         // This type describes what kind of hole we can find in the bitmap
-        enum HoleKind {
-            // For holes that fit within a single superblock, all we need is an
-            // allocation mask that we can pass to try_alloc_blocks.
-            SingleSuperblock { first_block_subidx: usize },
+        enum Hole {
+            // Holes that fit in a single superblock
+            SingleSuperblock {
+                // In which superblock are we allocating?
+                superblock_idx: usize,
 
-            // For holes that span multiple superblocks, we need to know the
-            // numbers of tail blocks (if any).
-            WithTailBlocks { num_tail_blocks: usize },
-        }
+                // At which sub-block of the superblock does the mask start?
+                first_block_subidx: usize,
+            },
 
-        // Add some position metadata to that and we should be good to go
-        struct Hole {
-            // Start of the hole's body
-            //
-            // For single-superblock holes, that's the index of the hole.
-            // For multi-superblock hole, that's the first fully empty superblock.
-            body_start_idx: usize,
+            // Holes that span multiple superblocks
+            MultipleSuperblocks {
+                // Index of the first "body" (fully empty) superblock
+                body_start_idx: usize,
 
-            // Kind of hole we're dealing with + kind-specific data
-            kind: HoleKind,
+                // Number of head blocks (if any) in the previous superblock
+                num_head_blocks: usize,
+            },
         }
 
         // The hole search is resumed when allocation fails...
@@ -379,19 +377,18 @@ impl Allocator {
                         // - Allocation can only proceed to the end by removing
                         //   full superblocks from remaining_blocks, so that
                         //   property is preserved over time.
-                        let num_tail_blocks =
-                            remaining_blocks % Self::blocks_per_superblock();
+                        let previous_blocks = num_blocks - remaining_blocks;
+                        let num_head_blocks =
+                            previous_blocks % Self::blocks_per_superblock();
                         let num_prev_superblocks =
-                            remaining_blocks / Self::blocks_per_superblock();
+                            previous_blocks / Self::blocks_per_superblock();
 
                         // So now we can output the hole. On failure, we'll get
                         // back what exactly went wrong.
-                        let reply = co.yield_(Hole {
+                        let reply = co.yield_(Hole::MultipleSuperblocks {
                             body_start_idx:
                                 superblock_idx - num_prev_superblocks,
-                            kind: HoleKind::WithTailBlocks {
-                                num_tail_blocks
-                            },
+                            num_head_blocks,
                         }).await;
 
                         // Where did allocation fail?
@@ -449,11 +446,9 @@ impl Allocator {
                         // We found all we need within a single superblock
                         Ok(first_block_subidx) => {
                             // Emit that hole so allocation can be carried out
-                            let reply = co.yield_(Hole {
-                                body_start_idx: superblock_idx,
-                                kind: HoleKind::SingleSuperblock {
-                                    first_block_subidx
-                                },
+                            let reply = co.yield_(Hole::SingleSuperblock {
+                                superblock_idx,
+                                first_block_subidx,
                             }).await;
 
                             // On failure, update our view of the current
@@ -506,20 +501,20 @@ impl Allocator {
         'alloc_attempts: while let GeneratorState::Yielded(hole) =
             hole_generator.resume_with(resume_arg)
         {
-            match hole.kind {
+            match hole {
                 // All blocks are within a single superblock, no transaction
-                HoleKind::SingleSuperblock { first_block_subidx } => {
+                Hole::SingleSuperblock { superblock_idx,
+                                         first_block_subidx } => {
                     // ...so we just compute the mask and try to allocate
                     let mask = SuperblockBitmap::new_mask(first_block_subidx,
                                                           num_blocks);
-                    match self.try_alloc_blocks(hole.body_start_idx, mask)
+                    match self.try_alloc_blocks(superblock_idx, mask)
                     {
                         // We managed to allocate this hole
                         Ok(()) => {
                             // Compute the global index of the first block
                             result_first_block_idx = Some(
-                                hole.body_start_idx
-                                    * Self::blocks_per_superblock()
+                                superblock_idx * Self::blocks_per_superblock()
                                     + first_block_subidx
                             );
                             break 'alloc_attempts;
@@ -529,7 +524,7 @@ impl Allocator {
                         // updated view of the bit pattern for this superblock
                         Err(observed_bitmap) => {
                             resume_arg = BadAlloc {
-                                bad_superblock_idx: hole.body_start_idx,
+                                bad_superblock_idx: superblock_idx,
                                 observed_bitmap,
                             };
                             continue 'alloc_attempts;
@@ -538,19 +533,20 @@ impl Allocator {
                 },
 
                 // Blocks span more than one superblock, need a transaction
-                HoleKind::WithTailBlocks { mut num_tail_blocks } => {
+                Hole::MultipleSuperblocks { body_start_idx,
+                                            mut num_head_blocks } => {
                     // Given the number of head blocks, we can find all other
                     // parameters of the active transaction.
-                    let other_blocks = num_blocks - num_tail_blocks;
+                    let other_blocks = num_blocks - num_head_blocks;
                     let num_body_superblocks =
                         other_blocks / Self::blocks_per_superblock();
-                    let mut num_head_blocks =
+                    let mut num_tail_blocks =
                         other_blocks % Self::blocks_per_superblock();
 
                     // Try to allocate the body of the transaction
                     let mut transaction = match AllocTransaction::with_body(
                         self,
-                        hole.body_start_idx,
+                        body_start_idx,
                         num_body_superblocks
                     ) {
                         // On success, bubble up the transaction object
