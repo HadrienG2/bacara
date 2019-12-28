@@ -775,11 +775,8 @@ impl Allocator {
         &self,
         superblock_idx: usize
     ) -> Result<(), SuperblockBitmap> {
-        // Check interface preconditions in debug builds
         debug_assert!(superblock_idx < self.usage_bitmap.len(),
                       "Superblock index is out of bitmap range");
-
-        // The superblock should initially be fully free
         self.usage_bitmap[superblock_idx]
             .try_alloc_all(Ordering::Relaxed, Ordering::Relaxed)
     }
@@ -796,10 +793,8 @@ impl Allocator {
         superblock_idx: usize,
         mask: SuperblockBitmap
     ) -> Result<(), SuperblockBitmap> {
-        // Check interface preconditions in debug builds
         debug_assert!(superblock_idx < self.usage_bitmap.len(),
                       "Superblock index is out of bitmap range");
-
         self.usage_bitmap[superblock_idx].try_alloc_mask(mask,
                                                          Ordering::Relaxed,
                                                          Ordering::Relaxed)
@@ -811,6 +806,8 @@ impl Allocator {
     /// `Release` memory barrier in order to avoid deallocation being reordered
     /// before usage of the memory block by the compiler or CPU.
     pub(crate) fn dealloc_superblock(&self, superblock_idx: usize) {
+        debug_assert!(superblock_idx < self.usage_bitmap.len(),
+                      "Superblock index is out of bitmap range");
         self.usage_bitmap[superblock_idx].dealloc_all(Ordering::Relaxed);
     }
 
@@ -822,6 +819,8 @@ impl Allocator {
     pub(crate) fn dealloc_blocks(&self,
                                  superblock_idx: usize,
                                  mask: SuperblockBitmap) {
+        debug_assert!(superblock_idx < self.usage_bitmap.len(),
+                      "Superblock index is out of bitmap range");
         self.usage_bitmap[superblock_idx].dealloc_mask(mask, Ordering::Relaxed);
     }
 }
