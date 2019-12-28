@@ -77,13 +77,13 @@ impl SuperblockBitmap {
 
     /// Number of free blocks which could be used for a "head" block sequence,
     /// which must end at the end of the superblock
-    pub fn free_head_blocks(&self) -> usize {
+    pub fn free_blocks_at_end(&self) -> usize {
         self.0.leading_zeros() as usize
     }
 
     /// Number of free blocks which could be used for a "tail" block sequence,
     /// which must start at the start of the superblock
-    pub fn free_tail_blocks(&self) -> usize {
+    pub fn free_blocks_at_start(&self) -> usize {
         self.0.trailing_zeros() as usize
     }
 
@@ -110,7 +110,7 @@ impl SuperblockBitmap {
 
             // Can we still find a suitably large hole in here?
             if num_blocks > remaining_blocks {
-                return Err(self.free_head_blocks());
+                return Err(self.free_blocks_at_end());
             }
 
             // Find how many blocks are available at the current index. We must

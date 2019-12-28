@@ -122,7 +122,7 @@ impl<'allocator> AllocTransaction<'allocator> {
         self.allocator
             .try_alloc_blocks(self.body_start_idx - 1,
                               SuperblockBitmap::new_head_mask(num_blocks))
-            .map_err(|actual_bitmap| actual_bitmap.free_head_blocks())?;
+            .map_err(|actual_bitmap| actual_bitmap.free_blocks_at_end())?;
 
         // On success, add the head blocks to the transaction
         self.num_head_blocks = num_blocks;

@@ -288,7 +288,7 @@ impl Allocator {
 
             // Holes that span multiple superblocks
             MultipleSuperblocks {
-                // Index of the first "body" (fully empty) superblock
+                // Index of first "body" (fully empty) superblock in the hole
                 body_start_idx: usize,
 
                 // Number of head blocks (if any) in the previous superblock
@@ -304,13 +304,12 @@ impl Allocator {
             bad_superblock_idx: usize,
 
             // ...because of this bit pattern
-            // FIXME: Figure out if this is the best info we can provide.
             observed_bitmap: SuperblockBitmap,
         }
 
         // This generator searches for and produces holes in the bitmap
         generator_mut!(hole_generator, |co: Co<Hole, BadAlloc>| async move {
-            // Hole search status
+            // How many blocks do we still need to find?
             let mut remaining_blocks = num_blocks;
 
             // Search for a large enough hole in the bitmap
@@ -362,10 +361,12 @@ impl Allocator {
                 // the next loop iteration, on failure, we'll drop that hole.
                 if remaining_blocks < num_blocks {
                     // How many blocks can we append at the end of the hole?
+                    //
+                    // TODO: Cross-check if this optimization is effective.
                     let found_blocks = if bitmap.is_empty() {
                         Self::blocks_per_superblock()
                     } else {
-                        bitmap.free_tail_blocks()
+                        bitmap.free_blocks_at_start()
                     };
 
                     // Have we found a big enough hole yet?
@@ -393,10 +394,10 @@ impl Allocator {
 
                         // Where did allocation fail?
                         if reply.bad_superblock_idx < superblock_idx {
-                            // Allocation failed before us, we update our
-                            // knowledge of free blocks before the current block
+                            // Allocation failed before current block, we update
+                            // our knowledge of remaining_blocks
                             let num_head_blocks =
-                                reply.observed_bitmap.free_head_blocks();
+                                reply.observed_bitmap.free_blocks_at_end();
                             let prev_body_superblocks =
                                 superblock_idx - reply.bad_superblock_idx - 1;
                             remaining_blocks =
@@ -404,8 +405,8 @@ impl Allocator {
                                     - prev_body_superblocks
                                         * Self::blocks_per_superblock();
                             debug_assert!(
-                                remaining_blocks > Self::blocks_per_superblock(),
-                                "Allocation should have tried harder"
+                                remaining_blocks < Self::blocks_per_superblock(),
+                                "Allocation code should have tried harder"
                             );
                         } else if reply.bad_superblock_idx == superblock_idx {
                             // Allocation failed at the current superblock,
@@ -415,7 +416,7 @@ impl Allocator {
                             bitmap = reply.observed_bitmap;
                         } else if reply.bad_superblock_idx > superblock_idx {
                             // Allocation failed on the next superblock, so we
-                            // jump tp said superblock.
+                            // jump to said superblock.
                             //
                             // FIXME: We should be able to leverage advance
                             //        knowledge of the superblock's bitmap
