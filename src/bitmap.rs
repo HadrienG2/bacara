@@ -98,11 +98,9 @@ impl SuperblockBitmap {
         start_idx: usize,
         num_blocks: usize
     ) -> Result<usize, usize> {
-        // Prepare a working copy of the bitmap's integer representation
-        let mut bits = self.0 >> start_idx;
-
-        // Keep track of the index at which we're currently looking for holes
+        // Look for holes at increasing indices, from start_idx onwards
         let mut block_idx = start_idx;
+        let mut bits = self.0 >> start_idx;
         loop {
             // How many blocks have we not looked at yet?
             let remaining_blocks =
