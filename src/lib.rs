@@ -398,11 +398,11 @@ impl Allocator {
                             // our knowledge of remaining_blocks
                             let num_head_blocks =
                                 reply.observed_bitmap.free_blocks_at_end();
-                            let prev_body_superblocks =
+                            let num_prev_superblocks =
                                 superblock_idx - reply.bad_superblock_idx - 1;
                             remaining_blocks =
                                 num_blocks - num_head_blocks
-                                    - prev_body_superblocks
+                                    - num_prev_superblocks
                                         * Self::blocks_per_superblock();
                             debug_assert!(
                                 remaining_blocks < Self::blocks_per_superblock(),
