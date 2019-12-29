@@ -8,7 +8,7 @@ use crate::Allocator;
 // NOTE: The main purpose of this builder is to ensure that a certain number of
 //       preconditions are upheld upon constructing the allocator. These are
 //       listed as "must" bullet points in the struct members' doc comments.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Builder {
     /// Block alignment in bytes
     /// - Will be set to 1 if unspecified
