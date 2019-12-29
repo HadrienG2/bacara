@@ -207,6 +207,11 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
             if self.remaining_blocks == self.requested_blocks {
                 // Look for a suitable hole in the current superblock, at the
                 // block index where we left off last time.
+                //
+                // FIXME: There's probably a more efficient way to do the search
+                //        which does not require querying head blocks until
+                //        we're sure that we have enough body superblocks. But
+                //        do not experiment with this until we have benchmarks.
                 match self.current_bitmap.search_free_blocks(
                     self.current_search_subidx,
                     self.requested_blocks,

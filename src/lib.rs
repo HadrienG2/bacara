@@ -58,14 +58,8 @@ mod transaction;
 
 use crate::{
     bitmap::AtomicSuperblockBitmap,
-    holes::Hole,
+    holes::{Hole, HoleSearch},
     transaction::AllocTransaction,
-};
-
-use genawaiter::{
-    generator_mut,
-    GeneratorState,
-    stack::Co,
 };
 
 use std::{
@@ -277,231 +271,57 @@ impl Allocator {
         // Convert requested size to a number of requested blocks
         let num_blocks = div_round_up(size, self.block_size());
 
-        // The hole search is resumed when allocation fails...
-        #[derive(Clone, Copy, Debug)]
-        #[must_use]
-        struct BadAlloc {
-            // ...at this superblock
-            bad_superblock_idx: usize,
-
-            // ...because of this bit pattern
-            observed_bitmap: SuperblockBitmap,
-        }
-
-        // This generator searches for and produces holes in the bitmap
-        generator_mut!(hole_generator, |co: Co<Hole, BadAlloc>| async move {
-            // How many blocks do we still need to find?
-            let mut remaining_blocks = num_blocks;
-
-            // Search for a large enough hole in the bitmap
-            //
-            // TODO: Always starting at the beginning isn't nice because we keep
-            //       hammering the same first superblocks while latter ones are
-            //       most likely to be free. Consider adding a state variable to
-            //       pick up at the superblock which we left off. It's just a
-            //       perf hint so atomic loads/stores should be enough.
-            //
-            //       We could go one step further and store both a superblock
-            //       index and a block index within that variable, via some
-            //       bit-packing trick : |superblock_idx|block_idx|. But this
-            //       puts an implementation limitation on the amount of
-            //       superblocks which we can track and in the end we're still
-            //       hitting the same superblock, so it may not be worthwhile.
-            //
-            //       We should update this state as quickly as possible, so that
-            //       other threads move away from the hole that we're looking
-            //       at, but not too often as otherwise the state variable would
-            //       be hammered too hard.
-            //
-            //       Random index selection isn't a good strategy here as it
-            //       will lead to fragmentation, which will make large
-            //       allocations fail all the time.
-            //
-            //       Generally speaking, this shouldn't be investigated before
-            //       we have benchmarks, first because the perf tradeoffs are
-            //       subtle and second because it will split the bitmap in two
-            //       halves that join between the end of the second half and the
-            //       beginning of the first half, and the complexity must be
-            //       justified by some proven substantial perf benefit.
-            //
-            'superblock_search: for (superblock_idx, superblock) in
-                self.usage_bitmap.iter().enumerate()
-            {
-                // We must yield as soon as a suitable hole is found, not wait
-                // for the next loop iteration, as 1/there may not be a next
-                // iteration and 2/the yield point has more info.
-                debug_assert_ne!(remaining_blocks, 0,
-                                 "Should have yielded a Hole as soon as enough
-                                  contiguous blocks have been found");
-
-                // Read current superblock
-                let mut bitmap = superblock.load(Ordering::Relaxed);
-
-                // If we have already found free blocks previously, try to
-                // append at end of that known hole. On success, we'll skip to
-                // the next loop iteration, on failure, we'll drop that hole.
-                if remaining_blocks < num_blocks {
-                    // How many blocks can we append at the end of the hole?
-                    //
-                    // TODO: Cross-check if this optimization is effective,
-                    //       maybe bitmap.free_blocks_at_start() is all we need.
-                    let found_blocks = if bitmap.is_empty() {
-                        Self::blocks_per_superblock()
-                    } else {
-                        bitmap.free_blocks_at_start()
-                    };
-
-                    // Have we found a big enough hole yet?
-                    if found_blocks >= remaining_blocks {
-                        // The current superblock is preceded by an integer
-                        // number of fully free superblocks (as one that's not
-                        // fully free would "break the chain"), possibly
-                        // preceded by some lone head blocks.
-                        let previous_blocks = num_blocks - remaining_blocks;
-                        let num_head_blocks =
-                            previous_blocks % Self::blocks_per_superblock();
-                        let num_prev_superblocks =
-                            previous_blocks / Self::blocks_per_superblock();
-
-                        // So now we can output the hole. On failure, we'll get
-                        // back what exactly went wrong.
-                        let reply = co.yield_(Hole::MultipleSuperblocks {
-                            body_start_idx:
-                                superblock_idx - num_prev_superblocks,
-                            num_head_blocks,
-                        }).await;
-
-                        // Where did allocation fail?
-                        if reply.bad_superblock_idx < superblock_idx {
-                            // Allocation failed before current block, we update
-                            // our knowledge of remaining_blocks
-                            let num_head_blocks =
-                                reply.observed_bitmap.free_blocks_at_end();
-                            let num_prev_superblocks =
-                                superblock_idx - reply.bad_superblock_idx - 1;
-                            remaining_blocks =
-                                num_blocks - num_head_blocks
-                                    - num_prev_superblocks
-                                        * Self::blocks_per_superblock();
-
-                            // Since the allocation code proceeds is allowed to
-                            // scan the hole forward, it should not be possible
-                            // to end up in a scenario where we can answer the
-                            // request with another part of the same hole.
-                            //
-                            // NOTE: We may not need this property anymore once
-                            //       hole search is extracted into its own
-                            //       primitive with dedicated methods for
-                            //       querying the next hole and providing (new)
-                            //       information about a certain superblock.
-                            debug_assert!(
-                                remaining_blocks > Self::blocks_per_superblock(),
-                                "Allocation code should have tried harder"
-                            );
-                        } else if reply.bad_superblock_idx == superblock_idx {
-                            // Allocation failed at the current superblock,
-                            // update our knowledge of the bitmap and let the
-                            // bitmap analysis do its job.
-                            remaining_blocks = num_blocks;
-                            bitmap = reply.observed_bitmap;
-                        } else if reply.bad_superblock_idx > superblock_idx {
-                            // Allocation failed on the next superblock, so we
-                            // jump to said superblock.
-                            //
-                            // FIXME: We should be able to leverage advance
-                            //        knowledge of the superblock's bitmap
-                            remaining_blocks = num_blocks;
-                            continue 'superblock_search;
-                        }
-                    }
-
-                    // The hole is not large enough yet, can we continue?
-                    if bitmap.is_empty() {
-                        // Yes, there is no obstacle in the way
-                        remaining_blocks -= Self::blocks_per_superblock();
-                        continue 'superblock_search;
-                    } else {
-                        // No, we must abandon that hole and start another
-                        remaining_blocks = num_blocks;
-                    }
-                }
-
-                // If control reaches this point, we're not currently
-                // investigating any hole and may start a new one.
-                debug_assert_eq!(remaining_blocks, num_blocks,
-                                 "remaining_blocks was not reset properly");
-
-                // So, let's look for a suitably large hole in this superblock
-                let mut search_subidx = 0;
-                'head_search: while search_subidx < Self::blocks_per_superblock() {
-                    match bitmap.search_free_blocks(search_subidx, num_blocks) {
-                        // We found all we need within a single superblock
-                        Ok(first_block_subidx) => {
-                            // Emit that hole so allocation can be carried out
-                            let reply = co.yield_(Hole::SingleSuperblock {
-                                superblock_idx,
-                                first_block_subidx,
-                            }).await;
-
-                            // On failure, update our view of the current
-                            // superblock's allocation bitmap...
-                            debug_assert_eq!(
-                                reply.bad_superblock_idx, superblock_idx,
-                                "Invalid single-block alloc reply"
-                            );
-                            bitmap = reply.observed_bitmap;
-
-                            // ...and resume the search one bit after where we
-                            // found the previous hole. This ensures that hole
-                            // search completes in a finite number of steps even
-                            // when the allocator is heavily contended.
-                            search_subidx = first_block_subidx + 1;
-                            continue 'head_search;
-                        }
-
-                        // We only found some head blocks (maybe none). Search
-                        // for more free blocks in the next superblocks.
-                        Err(num_head_blocks) => {
-                            remaining_blocks = num_blocks - num_head_blocks;
-                            continue 'superblock_search;
-                        }
-                    }
-                }
-            }
-
-            // NOTE: If we didn't find enough blocks at the end of the bitmap,
-            //       the generator will return (), signalling end of iteration.
-        });
-
-        // FIXME: There's probably also a more efficient way to do the search
-        //        which does not require querying head blocks until we're sure
-        //        that we have enough body blocks.
+        // Start looking for holes in the usage bitmap
         //
-        //        Do not experiment with this until we have benchmarks.
-
-        // Every time we resume the hole generator, we pass in this argument.
-        // The initial value doesn't matter as it will be ignored.
-        let mut resume_arg = BadAlloc {
-            bad_superblock_idx: 0,
-            observed_bitmap: SuperblockBitmap::EMPTY,
-        };
+        // TODO: Always starting at the beginning isn't nice because we keep
+        //       hammering the same first superblocks while latter ones are
+        //       most likely to be free. Consider adding a state variable to
+        //       pick up at the superblock which we left off. It's just a
+        //       perf hint so atomic loads/stores should be enough.
+        //
+        //       We could go one step further and store both a superblock
+        //       index and a block index within that variable, via some
+        //       bit-packing trick : |superblock_idx|block_idx|. But this
+        //       puts an implementation limitation on the amount of
+        //       superblocks which we can track and in the end we're still
+        //       hitting the same superblock, so it may not be worthwhile.
+        //
+        //       We should update this state as quickly as possible, so that
+        //       other threads move away from the hole that we're looking
+        //       at, but not too often as otherwise the state variable would
+        //       be hammered too hard.
+        //
+        //       Random index selection isn't a good strategy here as it
+        //       will lead to fragmentation, which will make large
+        //       allocations fail all the time.
+        //
+        //       Generally speaking, this shouldn't be investigated before
+        //       we have benchmarks, first because the perf tradeoffs are
+        //       subtle and second because it will split the bitmap in two
+        //       halves that join between the end of the second half and the
+        //       beginning of the first half, and the complexity must be
+        //       justified by some proven substantial perf benefit.
+        //
+        let (mut hole_search, mut hole_opt) = HoleSearch::new(
+            num_blocks,
+            self.usage_bitmap.iter()
+                             .map(|asb| asb.load(Ordering::Relaxed))
+        );
 
         // This will hold the result of our allocation attempts: the index of
         // the block at the start of the allocation, if any, and None otherwise.
         let mut result_first_block_idx = None;
 
         // Loop over the generator
-        'alloc_attempts: while let GeneratorState::Yielded(hole) =
-            hole_generator.resume_with(resume_arg)
-        {
+        'alloc_attempts: while let Some(ref hole) = hole_opt {
             match hole {
                 // All blocks are within a single superblock, no transaction
                 Hole::SingleSuperblock { superblock_idx,
                                          first_block_subidx } => {
                     // ...so we just compute the mask and try to allocate
-                    let mask = SuperblockBitmap::new_mask(first_block_subidx,
+                    let mask = SuperblockBitmap::new_mask(*first_block_subidx,
                                                           num_blocks);
-                    match self.try_alloc_blocks(superblock_idx, mask)
+                    match self.try_alloc_blocks(*superblock_idx, mask)
                     {
                         // We managed to allocate this hole
                         Ok(()) => {
@@ -516,10 +336,8 @@ impl Allocator {
                         // We failed to allocate this hole, but we got an
                         // updated view of the bit pattern for this superblock
                         Err(observed_bitmap) => {
-                            resume_arg = BadAlloc {
-                                bad_superblock_idx: superblock_idx,
-                                observed_bitmap,
-                            };
+                            hole_opt = hole_search.next(*superblock_idx,
+                                                        observed_bitmap);
                             continue 'alloc_attempts;
                         }
                     }
@@ -539,7 +357,7 @@ impl Allocator {
                     // Try to allocate the body of the transaction
                     let mut transaction = match AllocTransaction::with_body(
                         self,
-                        body_start_idx,
+                        *body_start_idx,
                         num_body_superblocks
                     ) {
                         // On success, bubble up the transaction object
@@ -547,10 +365,8 @@ impl Allocator {
 
                         // On failure, send back what went wrong
                         Err((bad_superblock_idx, observed_bitmap)) => {
-                            resume_arg = BadAlloc {
-                                bad_superblock_idx,
-                                observed_bitmap,
-                            };
+                            hole_opt = hole_search.next(bad_superblock_idx,
+                                                        observed_bitmap);
                             continue 'alloc_attempts;
                         },
                     };
@@ -575,10 +391,10 @@ impl Allocator {
                         if let Err(observed_bitmap) =
                             transaction.try_extend_body()
                         {
-                            resume_arg = BadAlloc {
-                                bad_superblock_idx: transaction.body_end_idx(),
-                                observed_bitmap,
-                            };
+                            hole_opt = hole_search.next(
+                                transaction.body_end_idx(),
+                                observed_bitmap
+                            );
                             continue 'alloc_attempts;
                         } else {
                             num_tail_blocks -= Self::blocks_per_superblock();
@@ -590,10 +406,10 @@ impl Allocator {
                         if let Err(observed_bitmap) =
                             transaction.try_alloc_tail(num_tail_blocks)
                         {
-                            resume_arg = BadAlloc {
-                                bad_superblock_idx: transaction.body_end_idx(),
+                            hole_opt = hole_search.next(
+                                transaction.body_end_idx(),
                                 observed_bitmap,
-                            };
+                            );
                             continue 'alloc_attempts;
                         }
                     }
