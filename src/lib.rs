@@ -395,7 +395,7 @@ impl Allocator {
                             //       querying the next hole and providing (new)
                             //       information about a certain superblock.
                             debug_assert!(
-                                remaining_blocks < Self::blocks_per_superblock(),
+                                remaining_blocks > Self::blocks_per_superblock(),
                                 "Allocation code should have tried harder"
                             );
                         } else if reply.bad_superblock_idx == superblock_idx {
@@ -410,6 +410,7 @@ impl Allocator {
                             //
                             // FIXME: We should be able to leverage advance
                             //        knowledge of the superblock's bitmap
+                            remaining_blocks = num_blocks;
                             continue 'superblock_search;
                         }
                     }
