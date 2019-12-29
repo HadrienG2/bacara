@@ -49,7 +49,7 @@ impl SuperblockBitmap {
     /// Compute an allocation mask for a "head" block sequence, which must end
     /// at the end of the superblock
     pub fn new_head_mask(len: usize) -> Self {
-        // Catch stupid use
+        // Check interface preconditions in debug builds
         debug_assert!(len <= Allocator::blocks_per_superblock(),
                       "Requested head mask length is unfeasible");
 
@@ -103,7 +103,7 @@ impl SuperblockBitmap {
         start_idx: usize,
         num_blocks: usize
     ) -> Result<usize, usize> {
-        // Check for stupidity
+        // Check interface preconditions in debug builds
         debug_assert!(start_idx < Allocator::blocks_per_superblock(),
                       "Search start index is out of superblock range");
         debug_assert_ne!(num_blocks, 0,
@@ -114,7 +114,7 @@ impl SuperblockBitmap {
         let mut bits = self.0.rotate_right(start_idx as u32);
         loop {
             // How many blocks have we not looked at yet?
-            let remaining_blocks =
+            let mut remaining_blocks =
                 Allocator::blocks_per_superblock() - block_idx;
 
             // Can we still find a suitably large hole in here?
@@ -131,9 +131,16 @@ impl SuperblockBitmap {
                 return Ok(block_idx);
             }
 
-            // If not, skip the hole and the block that ended it
-            bits = bits.rotate_right((free_blocks + 1) as u32);
-            block_idx += free_blocks + 1;
+            // If not, skip that hole...
+            bits = bits.rotate_right(free_blocks as u32);
+            block_idx += free_blocks;
+            remaining_blocks -= free_blocks;
+
+            // ...and the sequence of allocated blocks that follows it
+            let allocated_blocks =
+                ((!bits).trailing_zeros() as usize).min(remaining_blocks);
+            bits = bits.rotate_right(allocated_blocks as u32);
+            block_idx += allocated_blocks;
         }
     }
 }
