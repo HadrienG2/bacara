@@ -246,13 +246,7 @@ impl Allocator {
 
         // Handle the zero-sized edge case
         //
-        // TODO: Decide if this code is needed by studying how well the general
-        //       algorithm would handle this edge case
-        //
-        // TODO: In general, go through the code once finished and try to
-        //       simplify and deduplicate it as done for `dealloc_unbound()`.
-        //
-        // TODO: We'll need to revise this if asked to handle overaligne allocs.
+        // TODO: We'll need to revise this if we ever allow overaligned allocs.
         if size == 0 {
             return Some(
                 // This is safe because...
@@ -271,7 +265,7 @@ impl Allocator {
         // Convert requested size to a number of requested blocks
         let num_blocks = div_round_up(size, self.block_size());
 
-        // Start looking for holes in the usage bitmap
+        // Start looking for suitable free memory "holes" in the usage bitmap
         //
         // TODO: Always starting at the beginning isn't nice because we keep
         //       hammering the same first superblocks while latter ones are
@@ -301,43 +295,37 @@ impl Allocator {
         //       halves that join between the end of the second half and the
         //       beginning of the first half, and the complexity must be
         //       justified by some proven substantial perf benefit.
-        //
-        let (mut hole_search, mut hole_opt) = HoleSearch::new(
+        let (mut hole_search, hole_opt) = HoleSearch::new(
             num_blocks,
             self.usage_bitmap.iter()
                              .map(|asb| asb.load(Ordering::Relaxed))
         );
+        let mut hole = hole_opt?;
 
-        // This will hold the result of our allocation attempts: the index of
-        // the block at the start of the allocation, if any, and None otherwise.
-        let mut result_first_block_idx = None;
-
-        // Loop over the generator
-        'alloc_attempts: while let Some(ref hole) = hole_opt {
+        // Try to allocate the current hole, retry on failure.
+        let first_block_idx = 'alloc_attempts: loop {
             match hole {
-                // All blocks are within a single superblock, no transaction
+                // All blocks are in a single superblock, no transaction needed
                 Hole::SingleSuperblock { superblock_idx,
                                          first_block_subidx } => {
                     // ...so we just compute the mask and try to allocate
-                    let mask = SuperblockBitmap::new_mask(*first_block_subidx,
+                    let mask = SuperblockBitmap::new_mask(first_block_subidx,
                                                           num_blocks);
-                    match self.try_alloc_blocks(*superblock_idx, mask)
+                    match self.try_alloc_blocks(superblock_idx, mask)
                     {
                         // We managed to allocate this hole
                         Ok(()) => {
-                            // Compute the global index of the first block
-                            result_first_block_idx = Some(
+                            let first_block_idx =
                                 superblock_idx * Self::blocks_per_superblock()
-                                    + first_block_subidx
-                            );
-                            break 'alloc_attempts;
+                                    + first_block_subidx;
+                            break 'alloc_attempts first_block_idx;
                         },
 
                         // We failed to allocate this hole, but we got an
                         // updated view of the bit pattern for this superblock
                         Err(observed_bitmap) => {
-                            hole_opt = hole_search.retry(*superblock_idx,
-                                                         observed_bitmap);
+                            hole = hole_search.retry(superblock_idx,
+                                                     observed_bitmap)?;
                             continue 'alloc_attempts;
                         }
                     }
@@ -357,7 +345,7 @@ impl Allocator {
                     // Try to allocate the body of the transaction
                     let mut transaction = match AllocTransaction::with_body(
                         self,
-                        *body_start_idx,
+                        body_start_idx,
                         num_body_superblocks
                     ) {
                         // On success, bubble up the transaction object
@@ -365,8 +353,8 @@ impl Allocator {
 
                         // On failure, send back what went wrong
                         Err((bad_superblock_idx, observed_bitmap)) => {
-                            hole_opt = hole_search.retry(bad_superblock_idx,
-                                                         observed_bitmap);
+                            hole = hole_search.retry(bad_superblock_idx,
+                                                     observed_bitmap)?;
                             continue 'alloc_attempts;
                         },
                     };
@@ -391,10 +379,8 @@ impl Allocator {
                         if let Err(observed_bitmap) =
                             transaction.try_extend_body()
                         {
-                            hole_opt = hole_search.retry(
-                                transaction.body_end_idx(),
-                                observed_bitmap
-                            );
+                            hole = hole_search.retry(transaction.body_end_idx(),
+                                                     observed_bitmap)?;
                             continue 'alloc_attempts;
                         } else {
                             num_tail_blocks -= Self::blocks_per_superblock();
@@ -406,10 +392,8 @@ impl Allocator {
                         if let Err(observed_bitmap) =
                             transaction.try_alloc_tail(num_tail_blocks)
                         {
-                            hole_opt = hole_search.retry(
-                                transaction.body_end_idx(),
-                                observed_bitmap,
-                            );
+                            hole = hole_search.retry(transaction.body_end_idx(),
+                                                     observed_bitmap)?;
                             continue 'alloc_attempts;
                         }
                     }
@@ -419,14 +403,11 @@ impl Allocator {
                                      "Allocated an incorrect number of blocks");
 
                     // Commit the transaction and get the first block index
-                    result_first_block_idx = Some(transaction.commit());
-                    break 'alloc_attempts;
+                    let first_block_idx = transaction.commit();
+                    break 'alloc_attempts first_block_idx;
                 },
             }
-        }
-
-        // Abort if we didn't manage to allocate a suitable memory block
-        let first_block_idx = result_first_block_idx?;
+        };
 
         // Make sure that the previous reads from the allocation bitmap are
         // ordered before any subsequent access to the buffer by the current

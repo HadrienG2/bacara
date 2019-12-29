@@ -67,6 +67,10 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
     /// Start searching for holes and find the first suitable hole (if any)
     pub fn new(requested_blocks: usize,
                mut superblock_iter: SuperblockIter) -> (Self, Option<Hole>) {
+        // Zero-sized holes are not worth the trouble of being supported here
+        debug_assert_ne!(requested_blocks, 0,
+                         "No need for HoleSearch when inventing 0-sized holes");
+
         // Look at the first superblock. There must be one, since allocator
         // capacity cannot be zero per std::alloc rules.
         let first_bitmap =
@@ -137,8 +141,8 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
             while self.current_superblock_idx < bad_superblock_idx {
                 let bitmap_opt = self.superblock_iter.next();
                 debug_assert!(bitmap_opt.is_some(),
-                              "Allocation claims to have observed a block
-                               after the end of the backing store");
+                              "Allocation claims to have observed a block after
+                               the end of the allocator's backing store");
                 self.current_superblock_idx += 1;
             }
             self.current_bitmap = observed_bitmap;
