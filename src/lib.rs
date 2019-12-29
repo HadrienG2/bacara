@@ -58,6 +58,7 @@ mod transaction;
 
 use crate::{
     bitmap::AtomicSuperblockBitmap,
+    holes::Hole,
     transaction::AllocTransaction,
 };
 
@@ -275,27 +276,6 @@ impl Allocator {
 
         // Convert requested size to a number of requested blocks
         let num_blocks = div_round_up(size, self.block_size());
-
-        // This type describes what kind of hole we can find in the bitmap
-        enum Hole {
-            // Holes that fit in a single superblock
-            SingleSuperblock {
-                // In which superblock are we allocating?
-                superblock_idx: usize,
-
-                // At which sub-block of the superblock does the mask start?
-                first_block_subidx: usize,
-            },
-
-            // Holes that span multiple superblocks
-            MultipleSuperblocks {
-                // Index of first "body" (fully empty) superblock in the hole
-                body_start_idx: usize,
-
-                // Number of head blocks (if any) in the previous superblock
-                num_head_blocks: usize,
-            },
-        }
 
         // The hole search is resumed when allocation fails...
         #[derive(Clone, Copy, Debug)]
