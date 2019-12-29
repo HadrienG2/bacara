@@ -336,8 +336,8 @@ impl Allocator {
                         // We failed to allocate this hole, but we got an
                         // updated view of the bit pattern for this superblock
                         Err(observed_bitmap) => {
-                            hole_opt = hole_search.next(*superblock_idx,
-                                                        observed_bitmap);
+                            hole_opt = hole_search.retry(*superblock_idx,
+                                                         observed_bitmap);
                             continue 'alloc_attempts;
                         }
                     }
@@ -365,8 +365,8 @@ impl Allocator {
 
                         // On failure, send back what went wrong
                         Err((bad_superblock_idx, observed_bitmap)) => {
-                            hole_opt = hole_search.next(bad_superblock_idx,
-                                                        observed_bitmap);
+                            hole_opt = hole_search.retry(bad_superblock_idx,
+                                                         observed_bitmap);
                             continue 'alloc_attempts;
                         },
                     };
@@ -391,7 +391,7 @@ impl Allocator {
                         if let Err(observed_bitmap) =
                             transaction.try_extend_body()
                         {
-                            hole_opt = hole_search.next(
+                            hole_opt = hole_search.retry(
                                 transaction.body_end_idx(),
                                 observed_bitmap
                             );
@@ -406,7 +406,7 @@ impl Allocator {
                         if let Err(observed_bitmap) =
                             transaction.try_alloc_tail(num_tail_blocks)
                         {
-                            hole_opt = hole_search.next(
+                            hole_opt = hole_search.retry(
                                 transaction.body_end_idx(),
                                 observed_bitmap,
                             );

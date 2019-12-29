@@ -100,9 +100,9 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
     /// why the previous hole couldn't be allocated. This reason is specified by
     /// indicating the superblock on which allocation failed and the allocation
     /// pattern that was observed on that superblock.
-    pub fn next(&mut self,
-                bad_superblock_idx: usize,
-                observed_bitmap: SuperblockBitmap) -> Option<Hole> {
+    pub fn retry(&mut self,
+                 bad_superblock_idx: usize,
+                 observed_bitmap: SuperblockBitmap) -> Option<Hole> {
         // Nothing can go wrong in a fully free superblock
         debug_assert!(!observed_bitmap.is_empty(),
                       "Nothing can go wrong with a fully free bitmap");
