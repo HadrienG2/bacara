@@ -76,7 +76,7 @@ impl SuperblockBitmap {
 
     /// Truth that allocation bitmap is a mask (contiguous allocation)
     pub fn is_mask(&self) -> bool {
-        // NOTE: Usually equal for masks, but 2x smaller for EMPTY
+        // NOTE: Usually equal for masks, but 2x smaller in the case of EMPTY.
         self.0.count_zeros() <= self.0.leading_zeros() + self.0.trailing_zeros()
     }
 
@@ -476,7 +476,8 @@ mod tests {
             // Hole search
             for start_idx in 0..Allocator::blocks_per_superblock() {
                 let max_len =
-                    Allocator::blocks_per_superblock() - start_idx.max(tail_len);
+                    Allocator::blocks_per_superblock()
+                        - start_idx.max(tail_len);
                 for len in 1..=max_len {
                     assert_eq!(tail.search_free_blocks(start_idx, len),
                                Ok(start_idx.max(tail_len)));
@@ -522,6 +523,7 @@ mod tests {
     }
 
     // TODO: Test things which aren't masks and SuperblockBitmap operators,
-    //       possibly in a single go.
+    //       possibly in a single go because we can't just test every non-mask
+    //       usize SuperblockBitmap. That would take way too long.
     // TODO: Test AtomicSuperblockBitmap
 }
