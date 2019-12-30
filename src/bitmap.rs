@@ -228,6 +228,7 @@ impl AtomicSuperblockBitmap {
     }
 
     /// Store a value into the atomic bitmap if the current value is as expected
+    /// and return the previous bit pattern + a success/failure signal
     fn compare_exchange(
         &self,
         current: SuperblockBitmap,
