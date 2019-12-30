@@ -727,7 +727,7 @@ mod tests {
 
         // Test configuration
         const NUM_MASKS: usize = 1000;
-        const ITERS_PER_MASK: usize = 100_000;
+        const ITERS_PER_MASK: usize = 20_000;
 
         // Set up what we need
         let atomic_bitmap =
@@ -792,7 +792,7 @@ mod tests {
 
         // Test configuration
         const NUM_MASKS: usize = 1000;
-        const ITERS_PER_MASK: usize = 20_000;
+        const ITERS_PER_MASK: usize = 10_000;
 
         // Set up what we need
         let atomic_bitmap =
