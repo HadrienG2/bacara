@@ -15,7 +15,7 @@ pub enum Hole {
         superblock_idx: usize,
 
         /// Block within that superblock in which the hole starts
-        first_block_subidx: usize,
+        first_block_subidx: u32,
     },
 
     /// Hole that spans multiple superblocks
@@ -25,7 +25,7 @@ pub enum Hole {
         body_start_idx: usize,
 
         /// Number of head blocks (if any) before the body superblocks
-        num_head_blocks: usize,
+        num_head_blocks: u32,
     },
 }
 
@@ -58,7 +58,7 @@ pub struct HoleSearch<SuperblockIter: Iterator<Item=SuperblockBitmap>> {
     current_bitmap: SuperblockBitmap,
 
     // Index of the block that we're looking at within the current superblock
-    current_search_subidx: usize,
+    current_search_subidx: u32,
 }
 
 impl<SuperblockIter> HoleSearch<SuperblockIter>
@@ -132,7 +132,7 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
             let num_prev_superblocks =
                 self.current_superblock_idx - bad_superblock_idx - 1;
             self.remaining_blocks -=
-                observed_bitmap.free_blocks_at_end()
+                (observed_bitmap.free_blocks_at_end() as usize)
                 + num_prev_superblocks * BLOCKS_PER_SUPERBLOCK;
         } else {
             // At the current superblock or after (the latter can happen if
@@ -175,7 +175,7 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
                 let found_blocks = if self.current_bitmap.is_empty() {
                     BLOCKS_PER_SUPERBLOCK
                 } else {
-                    self.current_bitmap.free_blocks_at_start()
+                    self.current_bitmap.free_blocks_at_start() as usize
                 };
 
                 // Is this enough to complete the current hole?
@@ -187,7 +187,8 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
                     let previous_blocks =
                         self.requested_blocks - self.remaining_blocks;
                     let num_head_blocks =
-                        previous_blocks % BLOCKS_PER_SUPERBLOCK;
+                        (previous_blocks % BLOCKS_PER_SUPERBLOCK)
+                            as u32;
                     let num_prev_superblocks =
                         previous_blocks / BLOCKS_PER_SUPERBLOCK;
 
@@ -238,7 +239,7 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
                     // for more free blocks in the next superblocks.
                     Err(num_head_blocks) => {
                         self.remaining_blocks =
-                            self.requested_blocks - num_head_blocks;
+                            self.requested_blocks - (num_head_blocks as usize);
                         self.current_search_subidx = 0;
                     }
                 }

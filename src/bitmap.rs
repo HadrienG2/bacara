@@ -4,12 +4,15 @@
 //! be used as vectors of bits. This module provides an abstraction to ease
 //! correct manipulation of the inner layer of this data structure.
 
-use crate::BLOCKS_PER_SUPERBLOCK;
-
 use std::{
     ops::{Add, BitAnd, BitOr, Not, Sub},
     sync::atomic::{AtomicUsize, Ordering},
 };
+
+
+/// Bit fiddling is done in u32 space, so we cast our own copy of
+/// BLOCKS_PER_SUPERBLOCK to u32. It's a bit count, so it should easily fit.
+const BLOCKS_PER_SUPERBLOCK: u32 = crate::BLOCKS_PER_SUPERBLOCK as u32;
 
 
 /// Block allocation pattern within a superblock
@@ -30,7 +33,7 @@ impl SuperblockBitmap {
 
     /// Compute an allocation mask given the index of the first bit that should
     /// be 1 (allocated) and the number of bits that should be 1.
-    pub fn new_mask(start: usize, len: usize) -> Self {
+    pub fn new_mask(start: u32, len: u32) -> Self {
         // Check interface preconditions in debug builds
         debug_assert!(start < BLOCKS_PER_SUPERBLOCK,
                       "Allocation start is out of superblock range");
@@ -39,7 +42,7 @@ impl SuperblockBitmap {
 
         // Handle the "full superblock" edge case without overflowing
         if len == BLOCKS_PER_SUPERBLOCK {
-            return Self(std::usize::MAX);
+            return Self::FULL;
         }
 
         // Otherwise, use a general bit pattern computation
@@ -48,19 +51,19 @@ impl SuperblockBitmap {
 
     /// Compute an allocation mask for a "head" block sequence, which must end
     /// at the end of the superblock
-    pub fn new_head_mask(len: usize) -> Self {
+    pub fn new_head_mask(len: u32) -> Self {
         // Check interface preconditions in debug builds
         debug_assert!(len <= BLOCKS_PER_SUPERBLOCK,
                       "Requested head mask length is unfeasible");
 
         // Modulo needed to avoid going out-of-bounds for len == 0
-        const BBS: usize = BLOCKS_PER_SUPERBLOCK;
+        const BBS: u32 = BLOCKS_PER_SUPERBLOCK;
         Self::new_mask((BBS - len) % BBS, len)
     }
 
     /// Compute an allocation mask for a "tail" block sequence, which must start
     /// at the beginning of the superblock
-    pub fn new_tail_mask(len: usize) -> Self {
+    pub fn new_tail_mask(len: u32) -> Self {
         Self::new_mask(0, len)
     }
 
@@ -82,14 +85,14 @@ impl SuperblockBitmap {
 
     /// Number of free blocks which could be used for a "head" block sequence,
     /// which must end at the end of the superblock
-    pub fn free_blocks_at_end(&self) -> usize {
-        self.0.leading_zeros() as usize
+    pub fn free_blocks_at_end(&self) -> u32 {
+        self.0.leading_zeros()
     }
 
     /// Number of free blocks which could be used for a "tail" block sequence,
     /// which must start at the start of the superblock
-    pub fn free_blocks_at_start(&self) -> usize {
-        self.0.trailing_zeros() as usize
+    pub fn free_blocks_at_start(&self) -> u32 {
+        self.0.trailing_zeros()
     }
 
     /// Search for a hole of N contiguous blocks, as early as possible in the
@@ -98,11 +101,14 @@ impl SuperblockBitmap {
     /// On success, return the block index at which a hole was found. On
     /// failure, return the number of free trailing blocks that could be used
     /// as the head of a multi-superblock allocation.
+    //
+    // TODO: Reconsider accepting usize num_blocks, since search will always
+    //       fail anyhow.
     pub fn search_free_blocks(
         &self,
-        start_idx: usize,
+        start_idx: u32,
         num_blocks: usize
-    ) -> Result<usize, usize> {
+    ) -> Result<u32, u32> {
         // Check interface preconditions in debug builds
         debug_assert!(start_idx < BLOCKS_PER_SUPERBLOCK,
                       "Search start index is out of superblock range");
@@ -111,19 +117,18 @@ impl SuperblockBitmap {
 
         // Look for holes at increasing indices, from start_idx onwards
         let mut block_idx = start_idx;
-        let mut bits = self.0.rotate_right(start_idx as u32);
+        let mut bits = self.0.rotate_right(start_idx);
         loop {
             // How many blocks have we not looked at yet?
             let mut remaining_blocks = BLOCKS_PER_SUPERBLOCK - block_idx;
 
             // Can we still find a suitably large hole in here?
-            if num_blocks > remaining_blocks {
+            if num_blocks > (remaining_blocks as usize) {
                 return Err(self.free_blocks_at_end().min(remaining_blocks));
             }
 
             // Find how many blocks are available at the current index.
-            let free_blocks =
-                (bits.trailing_zeros() as usize).min(remaining_blocks);
+            let free_blocks = bits.trailing_zeros().min(remaining_blocks);
 
             // Have we found a large enough hole?
             if free_blocks as usize >= num_blocks {
@@ -131,14 +136,14 @@ impl SuperblockBitmap {
             }
 
             // If not, skip that hole...
-            bits = bits.rotate_right(free_blocks as u32);
+            bits = bits.rotate_right(free_blocks);
             block_idx += free_blocks;
             remaining_blocks -= free_blocks;
 
             // ...and the sequence of allocated blocks that follows it
             let allocated_blocks =
-                ((!bits).trailing_zeros() as usize).min(remaining_blocks);
-            bits = bits.rotate_right(allocated_blocks as u32);
+                (!bits).trailing_zeros().min(remaining_blocks);
+            bits = bits.rotate_right(allocated_blocks);
             block_idx += allocated_blocks;
         }
     }
@@ -383,10 +388,10 @@ mod tests {
         for start_idx in 0..BLOCKS_PER_SUPERBLOCK {
             let max_len = BLOCKS_PER_SUPERBLOCK - start_idx;
             for len in 1..=max_len {
-                assert_eq!(EMPTY.search_free_blocks(start_idx, len),
+                assert_eq!(EMPTY.search_free_blocks(start_idx, len as usize),
                            Ok(start_idx));
             }
-            assert_eq!(EMPTY.search_free_blocks(start_idx, max_len + 1),
+            assert_eq!(EMPTY.search_free_blocks(start_idx, (max_len + 1) as usize),
                        Err(max_len));
         }
 
@@ -446,10 +451,10 @@ mod tests {
                 let max_len = (BLOCKS_PER_SUPERBLOCK - start_idx)
                                   .saturating_sub(head_len);
                 for len in 1..=max_len {
-                    assert_eq!(head.search_free_blocks(start_idx, len),
+                    assert_eq!(head.search_free_blocks(start_idx, len as usize),
                                Ok(start_idx));
                 }
-                assert_eq!(head.search_free_blocks(start_idx, max_len+1),
+                assert_eq!(head.search_free_blocks(start_idx, (max_len+1) as usize),
                            Err(0));
             }
 
@@ -480,10 +485,10 @@ mod tests {
             for start_idx in 0..BLOCKS_PER_SUPERBLOCK {
                 let max_len = BLOCKS_PER_SUPERBLOCK - start_idx.max(tail_len);
                 for len in 1..=max_len {
-                    assert_eq!(tail.search_free_blocks(start_idx, len),
+                    assert_eq!(tail.search_free_blocks(start_idx, len as usize),
                                Ok(start_idx.max(tail_len)));
                 }
-                assert_eq!(tail.search_free_blocks(start_idx, max_len+1),
+                assert_eq!(tail.search_free_blocks(start_idx, (max_len+1) as usize),
                            Err(max_len));
             }
 
@@ -523,14 +528,14 @@ mod tests {
 
                     let max_len = first_hole_len.max(second_hole_len);
                     for len in 1..=first_hole_len {
-                        assert_eq!(mask.search_free_blocks(start_idx, len),
+                        assert_eq!(mask.search_free_blocks(start_idx, len as usize),
                                    Ok(start_idx));
                     }
                     for len in (first_hole_len + 1)..max_len {
-                        assert_eq!(mask.search_free_blocks(start_idx, len),
+                        assert_eq!(mask.search_free_blocks(start_idx, len as usize),
                                    Ok(second_hole_start));
                     }
-                    assert_eq!(mask.search_free_blocks(start_idx, max_len+1),
+                    assert_eq!(mask.search_free_blocks(start_idx, (max_len+1) as usize),
                                Err(second_hole_len));
                 }
             }

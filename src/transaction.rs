@@ -25,7 +25,7 @@ use crate::{Allocator, BLOCKS_PER_SUPERBLOCK, SuperblockBitmap};
 pub struct AllocTransaction<'allocator> {
     /// Number of blocks allocated at the end of the "head" superblock, located
     /// right before the body superblock sequence.
-    num_head_blocks: usize,
+    num_head_blocks: u32,
 
     /// Index at which the body superblock sequence begins
     body_start_idx: usize,
@@ -35,7 +35,7 @@ pub struct AllocTransaction<'allocator> {
 
     /// Number of blocks allocated at the beginning of the "tail" superblock,
     /// located right after the body superblock sequence.
-    num_tail_blocks: usize,
+    num_tail_blocks: u32,
 
     /// Back-reference to the host allocator
     allocator: &'allocator Allocator,
@@ -103,7 +103,7 @@ impl<'allocator> AllocTransaction<'allocator> {
     ///
     /// On failure, will return how many head blocks are actually available
     /// before the first body superblock.
-    pub fn try_alloc_head(&mut self, num_blocks: usize) -> Result<(), usize> {
+    pub fn try_alloc_head(&mut self, num_blocks: u32) -> Result<(), u32> {
         // Check transaction object consistency
         self.debug_check_invariants();
 
@@ -162,7 +162,7 @@ impl<'allocator> AllocTransaction<'allocator> {
     /// On failure, will return the bit pattern that was actually observed on
     /// the last body superblock.
     pub fn try_alloc_tail(&mut self,
-                          num_blocks: usize) -> Result<(), SuperblockBitmap> {
+                          num_blocks: u32) -> Result<(), SuperblockBitmap> {
         // Check transaction object consistency
         self.debug_check_invariants();
 
@@ -195,9 +195,9 @@ impl<'allocator> AllocTransaction<'allocator> {
         self.debug_check_invariants();
 
         // Count how many blocks were allocated
-        self.num_head_blocks
+        (self.num_head_blocks as usize)
             + self.num_body_superblocks * BLOCKS_PER_SUPERBLOCK
-            + self.num_tail_blocks
+            + (self.num_tail_blocks as usize)
     }
 
     /// Accept the transaction, return the index of the first allocated _block_
@@ -207,7 +207,8 @@ impl<'allocator> AllocTransaction<'allocator> {
 
         // Find the index of the first "one" in the allocation mask
         let first_block_idx =
-            self.body_start_idx * BLOCKS_PER_SUPERBLOCK - self.num_head_blocks;
+            self.body_start_idx * BLOCKS_PER_SUPERBLOCK
+                - (self.num_head_blocks as usize);
 
         // Forget the transaction object so that transaction is not canceled
         std::mem::forget(self);
@@ -223,7 +224,7 @@ impl<'allocator> AllocTransaction<'allocator> {
             debug_assert_ne!(self.body_start_idx, 0,
                              "Head superblock has an out-of-bounds index");
             debug_assert_ne!(self.num_head_blocks,
-                             BLOCKS_PER_SUPERBLOCK,
+                             BLOCKS_PER_SUPERBLOCK as u32,
                              "Head superblock is fully allocated, should be \
                               marked as a body superblock instead");
         }
@@ -247,7 +248,7 @@ impl<'allocator> AllocTransaction<'allocator> {
             debug_assert_ne!(body_end_idx, superblock_capacity - 1,
                              "Tail superblock has an out-of-bounds index");
             debug_assert_ne!(self.num_tail_blocks,
-                             BLOCKS_PER_SUPERBLOCK,
+                             BLOCKS_PER_SUPERBLOCK as u32,
                              "Tail superblock is fully allocated, should be \
                               marked as a body superblock instead");
         }

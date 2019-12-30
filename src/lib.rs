@@ -188,7 +188,7 @@ impl Allocator {
     /// This is the granularity at which the allocator's internal bitmap tracks
     /// which regions of the backing store are used and unused.
     pub const fn block_size(&self) -> usize {
-        1 << (self.block_size_shift as usize)
+        1 << (self.block_size_shift as u32)
     }
 
     /// Superblock size of this allocator (in bytes)
@@ -316,14 +316,14 @@ impl Allocator {
                                          first_block_subidx } => {
                     // ...so we just compute the mask and try to allocate
                     let mask = SuperblockBitmap::new_mask(first_block_subidx,
-                                                          num_blocks);
+                                                          num_blocks as u32);
                     match self.try_alloc_blocks(superblock_idx, mask)
                     {
                         // We managed to allocate this hole
                         Ok(()) => {
                             let first_block_idx =
                                 superblock_idx * BLOCKS_PER_SUPERBLOCK
-                                    + first_block_subidx;
+                                    + (first_block_subidx as usize);
                             break 'alloc_attempts first_block_idx;
                         },
 
@@ -342,11 +342,11 @@ impl Allocator {
                                             mut num_head_blocks } => {
                     // Given the number of head blocks, we can find all other
                     // parameters of the active transaction.
-                    let other_blocks = num_blocks - num_head_blocks;
+                    let other_blocks = num_blocks - num_head_blocks as usize;
                     let num_body_superblocks =
                         other_blocks / BLOCKS_PER_SUPERBLOCK;
                     let mut num_tail_blocks =
-                        other_blocks % BLOCKS_PER_SUPERBLOCK;
+                        (other_blocks % BLOCKS_PER_SUPERBLOCK) as u32;
 
                     // Try to allocate the body of the transaction
                     let mut transaction = match AllocTransaction::with_body(
@@ -381,7 +381,7 @@ impl Allocator {
                     // If needed, allocate one more body superblock.
                     // This can happen as a result of moving the hole forward:
                     //     |0011|1111|1110|0000| -> |0000|1111|1111|1000|
-                    if num_tail_blocks >= BLOCKS_PER_SUPERBLOCK {
+                    if num_tail_blocks >= BLOCKS_PER_SUPERBLOCK as u32 {
                         if let Err(observed_bitmap) =
                             transaction.try_extend_body()
                         {
@@ -389,7 +389,7 @@ impl Allocator {
                                                      observed_bitmap)?;
                             continue 'alloc_attempts;
                         } else {
-                            num_tail_blocks -= BLOCKS_PER_SUPERBLOCK;
+                            num_tail_blocks -= BLOCKS_PER_SUPERBLOCK as u32;
                         }
                     }
 
@@ -507,7 +507,7 @@ impl Allocator {
                                                      self.block_size());
 
         // Does our first block fall in the middle of a superblock?
-        let local_start_idx = block_idx % BLOCKS_PER_SUPERBLOCK;
+        let local_start_idx = (block_idx % BLOCKS_PER_SUPERBLOCK) as u32;
         if local_start_idx != 0 {
             // Compute index of that superblock
             let superblock_idx = block_idx / BLOCKS_PER_SUPERBLOCK;
@@ -515,8 +515,8 @@ impl Allocator {
             // Compute how many blocks are allocated within the superblock,
             // bearing in mind that the buffer may end there
             let local_len =
-                (BLOCKS_PER_SUPERBLOCK - local_start_idx)
-                    .min(end_block_idx - block_idx);
+                (BLOCKS_PER_SUPERBLOCK - local_start_idx as usize)
+                    .min(end_block_idx - block_idx) as u32;
 
             // Deallocate leading buffer blocks in this first superblock
             self.dealloc_blocks(
@@ -525,7 +525,7 @@ impl Allocator {
             );
 
             // Advance block pointer, stop if all blocks were liberated
-            block_idx += local_len;
+            block_idx += local_len as usize;
             if block_idx == end_block_idx { return; }
         }
 
@@ -543,7 +543,7 @@ impl Allocator {
         if block_idx == end_block_idx { return; }
 
         // Deallocate trailing buffer blocks in the last superblock
-        let remaining_len = end_block_idx - block_idx;
+        let remaining_len = (end_block_idx - block_idx) as u32;
         self.dealloc_blocks(end_superblock_idx,
                             SuperblockBitmap::new_tail_mask(remaining_len));
     }
