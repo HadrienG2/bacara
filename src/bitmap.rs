@@ -719,6 +719,12 @@ mod tests {
         }
     }
 
+    // The following tests should be run in a "clean" execution environment,
+    // with as little background threads as possible, and possibly in release
+    // mode in addition to debug mode. You can get that by running them with:
+    //
+    //     cargo test [--release] -- --ignored --test-threads=1
+
     #[test]
     #[ignore]
     fn atomic_concurrent_mask_all() {
