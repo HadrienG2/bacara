@@ -154,7 +154,7 @@ impl Add for SuperblockBitmap {
     }
 }
 
-// Use the bit-and operaztor for set intersection
+// Use the bit-and operator for set intersection
 impl BitAnd for SuperblockBitmap {
     type Output = Self;
 
@@ -543,8 +543,106 @@ mod tests {
         }
     }
 
-    // TODO: Test things which aren't masks and SuperblockBitmap operators,
-    //       possibly in a single go because we can't just test every non-mask
-    //       usize SuperblockBitmap. That would take way too long.
+    #[test]
+    fn mask_operations() {
+        // Generate a first mask and its negation
+        for mask1_start in 0..Allocator::blocks_per_superblock() {
+            let max_mask1_len =
+                Allocator::blocks_per_superblock() - mask1_start;
+            for mask1_len in mask1_start..max_mask1_len {
+                let mask1 = SuperblockBitmap::new_mask(mask1_start, mask1_len);
+                let mask1_end = mask1_start + mask1_len;
+                let neg_mask1 = !mask1;
+
+                // Boolean properties
+                assert_eq!(neg_mask1.is_empty(), mask1.is_full());
+                assert_eq!(neg_mask1.is_full(), mask1.is_empty());
+                assert_eq!(neg_mask1.is_mask(),
+                           mask1.is_empty()
+                            || mask1.free_blocks_at_start() == 0
+                            || mask1.free_blocks_at_end() == 0);
+
+                // Free space before/after
+                assert_eq!(
+                    neg_mask1.free_blocks_at_start(),
+                    if mask1_start == 0 { mask1_len } else { 0 }
+                );
+                assert_eq!(
+                    neg_mask1.free_blocks_at_end(),
+                    if mask1_end == Allocator::blocks_per_superblock() {
+                        mask1_len
+                    } else {
+                        0
+                    }
+                );
+
+                // Now generate another mask to try some mask operations
+                for mask2_start in 0..Allocator::blocks_per_superblock() {
+                    let max_mask2_len =
+                        Allocator::blocks_per_superblock() - mask2_start;
+                    for mask2_len in 0..max_mask2_len {
+                        let mask2 = SuperblockBitmap::new_mask(mask2_start,
+                                                               mask2_len);
+
+                        // Subtraction means "bits set in A but not B" and its
+                        // properties are therefore checked by testing the
+                        // properties of AND and NOT.
+                        assert_eq!(mask1 - mask2, mask1 & !mask2);
+
+                        // All other set operations are symmetrical and only
+                        // need to be tested for mask2_start >= mask1_start
+                        if mask2_start < mask1_start { continue; }
+
+                        // Addition is equivalent to bitmap OR
+                        assert_eq!(mask1 + mask2, mask1 | mask2);
+
+                        // Intersection properties
+                        let mask1_and_2 = mask1 & mask2;
+                        assert_eq!(mask1_and_2, mask2 & mask1);
+                        assert_eq!(mask1_and_2.is_empty(),
+                                   mask1.is_empty() || mask2.is_empty()
+                                   || mask1_end <= mask2_start);
+                        assert_eq!(mask1_and_2.is_full(),
+                                   mask1.is_full() && mask2.is_full());
+                        assert!(mask1_and_2.is_mask());
+                        assert_eq!(mask1_and_2.free_blocks_at_start(),
+                                   if mask1_and_2.is_empty() {
+                                       Allocator::blocks_per_superblock()
+                                   } else {
+                                       mask1.free_blocks_at_start()
+                                            .max(mask2.free_blocks_at_start())
+                                   });
+                        assert_eq!(mask1_and_2.free_blocks_at_end(),
+                                   if mask1_and_2.is_empty() {
+                                       Allocator::blocks_per_superblock()
+                                   } else {
+                                       mask1.free_blocks_at_end()
+                                            .max(mask2.free_blocks_at_end())
+                                   });
+
+                        // Union properties
+                        let mask1_or_2 = mask1 | mask2;
+                        assert_eq!(mask1_or_2, mask2 | mask1);
+                        assert_eq!(mask1_or_2.is_empty(),
+                                   mask1.is_empty() && mask2.is_empty());
+                        assert_eq!(mask1_or_2.is_full(),
+                                   mask1.is_full() || mask2.is_full()
+                                   || (mask1_end >= mask2_start
+                                          && mask2_len == max_mask2_len));
+                        assert_eq!(mask1_or_2.is_mask(),
+                                   mask1.is_empty() || mask2.is_empty()
+                                   || mask1_end >= mask2_start);
+                        assert_eq!(mask1_or_2.free_blocks_at_start(),
+                                   mask1.free_blocks_at_start()
+                                        .min(mask2.free_blocks_at_start()));
+                        assert_eq!(mask1_or_2.free_blocks_at_end(),
+                                   mask1.free_blocks_at_end()
+                                        .min(mask2.free_blocks_at_end()));
+                    }
+                }
+            }
+        }
+    }
+
     // TODO: Test AtomicSuperblockBitmap
 }
