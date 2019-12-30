@@ -212,6 +212,7 @@ impl AtomicSuperblockBitmap {
 
     /// Get a mutable reference to the underlying bitmap
     pub fn get_mut(&mut self) -> &mut SuperblockBitmap {
+        // This is safe because SuperblockBitmap is repr(transparent)
         unsafe {
             &mut *(self.0.get_mut() as *mut usize as *mut SuperblockBitmap)
         }
