@@ -193,6 +193,14 @@ impl Allocator {
     /// call this function instead of relying on past results from it.
     pub const BLOCKS_PER_SUPERBLOCK: usize = BLOCKS_PER_SUPERBLOCK;
 
+    /// Block alignment of this allocator (in bytes)
+    ///
+    /// Every block managed by the allocator is guaranteed to have this
+    /// memory alignment "for free".
+    pub const fn block_alignment(&self) -> usize {
+        self.alignment
+    }
+
     /// Block size of this allocator (in bytes)
     ///
     /// This is the granularity at which the allocator's internal bitmap tracks

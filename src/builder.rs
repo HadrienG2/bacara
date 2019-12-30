@@ -49,7 +49,7 @@ impl Builder {
     ///
     /// Alignment must be a power of 2, and will be set to 1 (byte alignment)
     /// by default if left unspecified.
-    pub fn alignment(&mut self, align: usize) -> &mut Self {
+    pub fn alignment(mut self, align: usize) -> Self {
         assert!(align.is_power_of_two(), "Alignment must be a power of 2");
         assert!(self.block_align.replace(align).is_none(),
                 "Alignment must only be set once");
@@ -64,8 +64,8 @@ impl Builder {
     ///
     /// The block size must be a multiple of the alignment and a power of 2.
     ///
-    /// You must set either the block size and superblock size, but not both.
-    pub fn block_size(&mut self, block_size: usize) -> &mut Self {
+    /// You must set either the block size or the superblock size, but not both.
+    pub fn block_size(mut self, block_size: usize) -> Self {
         assert!(block_size.is_power_of_two(),
                 "Block size must be a power of 2");
         assert!(self.block_size.replace(block_size).is_none(),
@@ -79,11 +79,11 @@ impl Builder {
     /// size, which corresponds to the allocation request size for which the
     /// allocator should exhibit optimal CPU performance.
     ///
-    /// The superblock size must be a multiple of the alignment, of
-    /// `Allocator::BLOCKS_PER_SUPERBLOCK`, and a power of 2.
+    /// The superblock size must be a multiple of the alignment, and the product
+    /// of `Allocator::BLOCKS_PER_SUPERBLOCK` by a power of 2.
     ///
-    /// You must set either the block size and superblock size, but not both.
-    pub fn superblock_size(&mut self, superblock_size: usize) -> &mut Self {
+    /// You must set either the block size or the superblock size, but not both.
+    pub fn superblock_size(self, superblock_size: usize) -> Self {
         assert_eq!(superblock_size % BLOCKS_PER_SUPERBLOCK, 0,
                    "Superblock size must be a multiple of \
                     Allocator::BLOCKS_PER_SUPERBLOCK");
@@ -107,9 +107,9 @@ impl Builder {
     /// the `isize::MAX` limit. Yes, `isize`, you read that right. Rust pointers
     /// have some mysterious limitations, among which the one that it is
     /// forbidden to have pointer offsets that overflow `isize`.
-    pub fn capacity(&mut self, capacity: usize) -> &mut Self {
+    pub fn capacity(mut self, capacity: usize) -> Self {
         assert!(capacity != 0, "Backing store capacity must not be zero");
-        assert!(capacity < (std::isize::MAX as usize),
+        assert!(capacity <= (std::isize::MAX as usize),
                 "Backing store capacity cannot overflow isize::MAX");
         assert!(self.capacity.replace(capacity).is_none(),
                 "Backing store capacity must only be set once");
@@ -136,9 +136,9 @@ impl Builder {
         let superblock_size = block_size * BLOCKS_PER_SUPERBLOCK;
         let extra_bytes = capacity % superblock_size;
         if extra_bytes != 0 {
-            capacity =
-                capacity.checked_add(superblock_size - extra_bytes)
-                        .expect("Excessive backing store capacity requested");
+            capacity += superblock_size - extra_bytes;
+            assert!(capacity <= (std::isize::MAX as usize),
+                    "Excessive backing store capacity requested");
         }
 
         // Build the allocator, this is safe because we have checked all the
@@ -150,11 +150,436 @@ impl Builder {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+    fn initial_state() {
+        // Constructor route
+        let builder = Builder::new();
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, None);
+        assert_eq!(builder.capacity, None);
+
+        // Default-constructor route
+        let builder = Builder::default();
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, None);
+        assert_eq!(builder.capacity, None);
     }
 
-    // TODO: Tests tests test absolutely everything as this code is going to be
-    //       super-extremely tricky
+    #[test]
+    #[should_panic]
+    fn build_empty() {
+        Builder::new().build();
+    }
+
+    #[test]
+    fn good_alignment() {
+        let builder = Builder::new().alignment(1);
+        assert_eq!(builder.block_align, Some(1));
+        assert_eq!(builder.block_size, None);
+        assert_eq!(builder.capacity, None);
+
+        let builder = Builder::new().alignment(2);
+        assert_eq!(builder.block_align, Some(2));
+        assert_eq!(builder.block_size, None);
+        assert_eq!(builder.capacity, None);
+
+        let builder = Builder::new().alignment(4);
+        assert_eq!(builder.block_align, Some(4));
+        assert_eq!(builder.block_size, None);
+        assert_eq!(builder.capacity, None);
+
+        let builder = Builder::new().alignment(8);
+        assert_eq!(builder.block_align, Some(8));
+        assert_eq!(builder.block_size, None);
+        assert_eq!(builder.capacity, None);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_alignment_0() {
+        Builder::new().alignment(0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_alignment_3() {
+        Builder::new().alignment(3);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_alignment_5() {
+        Builder::new().alignment(5);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_alignment_6() {
+        Builder::new().alignment(6);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_alignment_7() {
+        Builder::new().alignment(7);
+    }
+
+    #[test]
+    #[should_panic]
+    fn multiple_alignment() {
+        Builder::new().alignment(1).alignment(2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn build_alignment_only() {
+        Builder::new().alignment(1).build();
+    }
+
+    #[test]
+    fn good_block_size() {
+        let builder = Builder::new().block_size(1);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, Some(1));
+        assert_eq!(builder.capacity, None);
+
+        let builder = Builder::new().block_size(2);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, Some(2));
+        assert_eq!(builder.capacity, None);
+
+        let builder = Builder::new().block_size(4);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, Some(4));
+        assert_eq!(builder.capacity, None);
+
+        let builder = Builder::new().block_size(8);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, Some(8));
+        assert_eq!(builder.capacity, None);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_block_size_0() {
+        Builder::new().block_size(0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_block_size_3() {
+        Builder::new().block_size(3);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_block_size_5() {
+        Builder::new().block_size(5);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_block_size_6() {
+        Builder::new().block_size(6);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_block_size_7() {
+        Builder::new().block_size(7);
+    }
+
+    #[test]
+    #[should_panic]
+    fn multiple_block_sizes() {
+        Builder::new().block_size(1).block_size(2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn build_block_size_only() {
+        Builder::new().block_size(1).build();
+    }
+
+    #[test]
+    fn good_superblock_size() {
+        let builder = Builder::new().superblock_size(BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, Some(1));
+        assert_eq!(builder.capacity, None);
+
+        let builder = Builder::new().superblock_size(2 * BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, Some(2));
+        assert_eq!(builder.capacity, None);
+
+        let builder = Builder::new().superblock_size(4 * BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, Some(4));
+        assert_eq!(builder.capacity, None);
+
+        let builder = Builder::new().superblock_size(8 * BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, Some(8));
+        assert_eq!(builder.capacity, None);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_superblock_size_0() {
+        Builder::new().superblock_size(0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_superblock_size_half() {
+        Builder::new().superblock_size(BLOCKS_PER_SUPERBLOCK / 2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_superblock_size_m1() {
+        Builder::new().superblock_size(BLOCKS_PER_SUPERBLOCK.saturating_sub(1));
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_superblock_size_p1() {
+        Builder::new().superblock_size(BLOCKS_PER_SUPERBLOCK + 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_superblock_size_3x() {
+        Builder::new().superblock_size(3 * BLOCKS_PER_SUPERBLOCK);
+    }
+
+    #[test]
+    #[should_panic]
+    fn block_and_superblock_sizes() {
+        Builder::new().block_size(1).superblock_size(2 * BLOCKS_PER_SUPERBLOCK);
+    }
+
+    #[test]
+    #[should_panic]
+    fn multiple_superblock_sizes() {
+        Builder::new().superblock_size(BLOCKS_PER_SUPERBLOCK)
+                      .superblock_size(2 * BLOCKS_PER_SUPERBLOCK);
+    }
+
+    #[test]
+    #[should_panic]
+    fn build_superblock_size_only() {
+        Builder::new().superblock_size(BLOCKS_PER_SUPERBLOCK).build();
+    }
+
+    #[test]
+    fn good_capacity() {
+        let builder = Builder::new().capacity(1);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, None);
+        assert_eq!(builder.capacity, Some(1));
+
+        let builder = Builder::new().capacity(2);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, None);
+        assert_eq!(builder.capacity, Some(2));
+
+        let builder = Builder::new().capacity(3);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, None);
+        assert_eq!(builder.capacity, Some(3));
+
+        let builder = Builder::new().capacity(4);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, None);
+        assert_eq!(builder.capacity, Some(4));
+
+        let builder = Builder::new().capacity(5);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, None);
+        assert_eq!(builder.capacity, Some(5));
+
+        let builder = Builder::new().capacity(6);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, None);
+        assert_eq!(builder.capacity, Some(6));
+
+        let builder = Builder::new().capacity(std::isize::MAX as usize - 1);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, None);
+        assert_eq!(builder.capacity, Some(std::isize::MAX as usize - 1));
+
+        let builder = Builder::new().capacity(std::isize::MAX as usize);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, None);
+        assert_eq!(builder.capacity, Some(std::isize::MAX as usize));
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_capacity_0() {
+        Builder::new().capacity(0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_capacity_p1() {
+        Builder::new().capacity(std::isize::MAX as usize + 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn multiple_capacities() {
+        Builder::new().capacity(1).capacity(2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn build_capacity_only() {
+        Builder::new().capacity(1).build();
+    }
+
+    #[test]
+    fn minimal_builds() {
+        let builder = Builder::new().block_size(1).capacity(1);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, Some(1));
+        assert_eq!(builder.capacity, Some(1));
+        let allocator = builder.build();
+        assert_eq!(allocator.block_size(), 1);
+        assert_eq!(allocator.capacity(), BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(allocator.block_alignment(), 1);
+
+        let builder = Builder::new().superblock_size(BLOCKS_PER_SUPERBLOCK)
+                                    .capacity(BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, Some(1));
+        assert_eq!(builder.capacity, Some(BLOCKS_PER_SUPERBLOCK));
+        let allocator = builder.build();
+        assert_eq!(allocator.block_size(), 1);
+        assert_eq!(allocator.capacity(), BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(allocator.block_alignment(), 1);
+
+        let builder = Builder::new().block_size(2).capacity(1);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, Some(2));
+        assert_eq!(builder.capacity, Some(1));
+        let allocator = builder.build();
+        assert_eq!(allocator.block_size(), 2);
+        assert_eq!(allocator.capacity(), 2 * BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(allocator.block_alignment(), 1);
+
+        let builder = Builder::new().block_size(1)
+                                    .capacity(BLOCKS_PER_SUPERBLOCK + 1);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, Some(1));
+        assert_eq!(builder.capacity, Some(BLOCKS_PER_SUPERBLOCK + 1));
+        let allocator = builder.build();
+        assert_eq!(allocator.block_size(), 1);
+        assert_eq!(allocator.capacity(), 2 * BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(allocator.block_alignment(), 1);
+
+        let builder = Builder::new().block_size(4)
+                                    .capacity(8 * BLOCKS_PER_SUPERBLOCK + 1);
+        assert_eq!(builder.block_align, None);
+        assert_eq!(builder.block_size, Some(4));
+        assert_eq!(builder.capacity, Some(8 * BLOCKS_PER_SUPERBLOCK + 1));
+        let allocator = builder.build();
+        assert_eq!(allocator.block_size(), 4);
+        assert_eq!(allocator.capacity(), 12 * BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(allocator.block_alignment(), 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn capacity_overflow() {
+        // Capacity will go above std::isize::MAX due to block rounding
+        Builder::new().block_size(2).capacity(std::isize::MAX as usize).build();
+    }
+
+    #[test]
+    fn fully_specified_builds() {
+        let builder = Builder::new().alignment(1).block_size(1).capacity(1);
+        assert_eq!(builder.block_align, Some(1));
+        assert_eq!(builder.block_size, Some(1));
+        assert_eq!(builder.capacity, Some(1));
+        let allocator = builder.build();
+        assert_eq!(allocator.block_size(), 1);
+        assert_eq!(allocator.capacity(), BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(allocator.block_alignment(), 1);
+
+        let builder = Builder::new().alignment(2).block_size(2).capacity(1);
+        assert_eq!(builder.block_align, Some(2));
+        assert_eq!(builder.block_size, Some(2));
+        assert_eq!(builder.capacity, Some(1));
+        let allocator = builder.build();
+        assert_eq!(allocator.block_size(), 2);
+        assert_eq!(allocator.capacity(), 2 * BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(allocator.block_alignment(), 2);
+
+        let builder = Builder::new().alignment(2).block_size(4).capacity(1);
+        assert_eq!(builder.block_align, Some(2));
+        assert_eq!(builder.block_size, Some(4));
+        assert_eq!(builder.capacity, Some(1));
+        let allocator = builder.build();
+        assert_eq!(allocator.block_size(), 4);
+        assert_eq!(allocator.capacity(), 4 * BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(allocator.block_alignment(), 2);
+
+        let builder = Builder::new().alignment(2).block_size(8).capacity(1);
+        assert_eq!(builder.block_align, Some(2));
+        assert_eq!(builder.block_size, Some(8));
+        assert_eq!(builder.capacity, Some(1));
+        let allocator = builder.build();
+        assert_eq!(allocator.block_size(), 8);
+        assert_eq!(allocator.capacity(), 8 * BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(allocator.block_alignment(), 2);
+
+        let builder = Builder::new().alignment(4).block_size(4).capacity(1);
+        assert_eq!(builder.block_align, Some(4));
+        assert_eq!(builder.block_size, Some(4));
+        assert_eq!(builder.capacity, Some(1));
+        let allocator = builder.build();
+        assert_eq!(allocator.block_size(), 4);
+        assert_eq!(allocator.capacity(), 4 * BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(allocator.block_alignment(), 4);
+
+        let builder = Builder::new().alignment(4).block_size(8).capacity(1);
+        assert_eq!(builder.block_align, Some(4));
+        assert_eq!(builder.block_size, Some(8));
+        assert_eq!(builder.capacity, Some(1));
+        let allocator = builder.build();
+        assert_eq!(allocator.block_size(), 8);
+        assert_eq!(allocator.capacity(), 8 * BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(allocator.block_alignment(), 4);
+
+        let builder = Builder::new().alignment(8).block_size(8).capacity(1);
+        assert_eq!(builder.block_align, Some(8));
+        assert_eq!(builder.block_size, Some(8));
+        assert_eq!(builder.capacity, Some(1));
+        let allocator = builder.build();
+        assert_eq!(allocator.block_size(), 8);
+        assert_eq!(allocator.capacity(), 8 * BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(allocator.block_alignment(), 8);
+
+        let builder = Builder::new().alignment(2)
+                                    .block_size(8)
+                                    .capacity(24 * BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(builder.block_align, Some(2));
+        assert_eq!(builder.block_size, Some(8));
+        assert_eq!(builder.capacity, Some(24 * BLOCKS_PER_SUPERBLOCK));
+        let allocator = builder.build();
+        assert_eq!(allocator.block_size(), 8);
+        assert_eq!(allocator.capacity(), 24 * BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(allocator.block_alignment(), 2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn incompatible_block_size_alignment() {
+        Builder::new().alignment(2).block_size(1).capacity(1).build();
+    }
 }
