@@ -1,6 +1,6 @@
 //! Mechanism for building an `Allocator`, with proper invariant checking
 
-use crate::Allocator;
+use crate::{Allocator, BLOCKS_PER_SUPERBLOCK};
 
 
 /// Builder for a bitmap allocator
@@ -80,14 +80,14 @@ impl Builder {
     /// allocator should exhibit optimal CPU performance.
     ///
     /// The superblock size must be a multiple of the alignment, of
-    /// `Allocator::blocks_per_superblock()`, and a power of 2.
+    /// `Allocator::BLOCKS_PER_SUPERBLOCK`, and a power of 2.
     ///
     /// You must set either the block size and superblock size, but not both.
     pub fn superblock_size(&mut self, superblock_size: usize) -> &mut Self {
-        assert_eq!(superblock_size % Allocator::blocks_per_superblock(), 0,
+        assert_eq!(superblock_size % BLOCKS_PER_SUPERBLOCK, 0,
                    "Superblock size must be a multiple of \
-                    Allocator::blocks_per_superblock()");
-        let block_size = superblock_size / Allocator::blocks_per_superblock();
+                    Allocator::BLOCKS_PER_SUPERBLOCK");
+        let block_size = superblock_size / BLOCKS_PER_SUPERBLOCK;
         self.block_size(block_size)
     }
 
@@ -133,7 +133,7 @@ impl Builder {
         // Round requested capacity to next multiple of superblock size
         let mut capacity =
             self.capacity.expect("You must specify a backing store capacity");
-        let superblock_size = block_size * Allocator::blocks_per_superblock();
+        let superblock_size = block_size * BLOCKS_PER_SUPERBLOCK;
         let extra_bytes = capacity % superblock_size;
         if extra_bytes != 0 {
             capacity =

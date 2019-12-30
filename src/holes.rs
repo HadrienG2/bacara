@@ -1,6 +1,6 @@
 //! Mechanism for searching holes in the allocation bitmap
 
-use crate::{Allocator, SuperblockBitmap};
+use crate::{BLOCKS_PER_SUPERBLOCK, SuperblockBitmap};
 
 
 /// Location of a free memory "hole" within the allocation bitmap
@@ -133,7 +133,7 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
                 self.current_superblock_idx - bad_superblock_idx - 1;
             self.remaining_blocks -=
                 observed_bitmap.free_blocks_at_end()
-                + num_prev_superblocks * Allocator::blocks_per_superblock();
+                + num_prev_superblocks * BLOCKS_PER_SUPERBLOCK;
         } else {
             // At the current superblock or after (the latter can happen if
             // allocation tried to shift the hole forward). Move to that
@@ -173,7 +173,7 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
                 // TODO: Cross-check if this optimization is effective, maybe
                 //       self.current_bitmap.free_blocks_at_start() is enough.
                 let found_blocks = if self.current_bitmap.is_empty() {
-                    Allocator::blocks_per_superblock()
+                    BLOCKS_PER_SUPERBLOCK
                 } else {
                     self.current_bitmap.free_blocks_at_start()
                 };
@@ -187,9 +187,9 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
                     let previous_blocks =
                         self.requested_blocks - self.remaining_blocks;
                     let num_head_blocks =
-                        previous_blocks % Allocator::blocks_per_superblock();
+                        previous_blocks % BLOCKS_PER_SUPERBLOCK;
                     let num_prev_superblocks =
-                        previous_blocks / Allocator::blocks_per_superblock();
+                        previous_blocks / BLOCKS_PER_SUPERBLOCK;
 
                     // Emit the current hole
                     return Some(Hole::MultipleSuperblocks {
@@ -199,7 +199,7 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
                     });
                 } else if self.current_bitmap.is_empty() {
                     // The hole is not big enough yet, but can be extended.
-                    self.remaining_blocks -= Allocator::blocks_per_superblock();
+                    self.remaining_blocks -= BLOCKS_PER_SUPERBLOCK;
                 } else {
                     // The hole is too small and can't be extended.
                     // Reset hole search to start looking for another hole.

@@ -1,7 +1,7 @@
 //! RAII mechanism to automatically rollback partially committed allocations
 //! if subsequent steps of the allocation process fail.
 
-use crate::{Allocator, SuperblockBitmap};
+use crate::{Allocator, BLOCKS_PER_SUPERBLOCK, SuperblockBitmap};
 
 
 /// RAII guard to automatically rollback failed allocations
@@ -196,7 +196,7 @@ impl<'allocator> AllocTransaction<'allocator> {
 
         // Count how many blocks were allocated
         self.num_head_blocks
-            + self.num_body_superblocks * Allocator::blocks_per_superblock()
+            + self.num_body_superblocks * BLOCKS_PER_SUPERBLOCK
             + self.num_tail_blocks
     }
 
@@ -207,8 +207,7 @@ impl<'allocator> AllocTransaction<'allocator> {
 
         // Find the index of the first "one" in the allocation mask
         let first_block_idx =
-            self.body_start_idx * Allocator::blocks_per_superblock()
-                - self.num_head_blocks;
+            self.body_start_idx * BLOCKS_PER_SUPERBLOCK - self.num_head_blocks;
 
         // Forget the transaction object so that transaction is not canceled
         std::mem::forget(self);
@@ -224,7 +223,7 @@ impl<'allocator> AllocTransaction<'allocator> {
             debug_assert_ne!(self.body_start_idx, 0,
                              "Head superblock has an out-of-bounds index");
             debug_assert_ne!(self.num_head_blocks,
-                             Allocator::blocks_per_superblock(),
+                             BLOCKS_PER_SUPERBLOCK,
                              "Head superblock is fully allocated, should be \
                               marked as a body superblock instead");
         }
@@ -248,7 +247,7 @@ impl<'allocator> AllocTransaction<'allocator> {
             debug_assert_ne!(body_end_idx, superblock_capacity - 1,
                              "Tail superblock has an out-of-bounds index");
             debug_assert_ne!(self.num_tail_blocks,
-                             Allocator::blocks_per_superblock(),
+                             BLOCKS_PER_SUPERBLOCK,
                              "Tail superblock is fully allocated, should be \
                               marked as a body superblock instead");
         }

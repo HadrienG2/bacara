@@ -64,7 +64,7 @@ use crate::{
 
 use std::{
     alloc::{self, Layout},
-    mem::{self, MaybeUninit},
+    mem::MaybeUninit,
     ptr::NonNull,
     sync::atomic::{self, Ordering},
 };
@@ -75,6 +75,14 @@ pub use builder::Builder;
 
 // Re-export allocation transaction for other components
 pub(crate) use crate::bitmap::SuperblockBitmap;
+
+/// Number of blocks in a superblock
+///
+/// This is what's publicly exposed as Allocator::BLOCKS_PER_SUPERBLOCK, but
+/// it's also internally exposed as a module-level const so that it's shorter
+/// and can be brought into scope with "use".
+pub(crate) const BLOCKS_PER_SUPERBLOCK: usize =
+    std::mem::size_of::<SuperblockBitmap>() * 8;
 
 
 /// A thread-safe bitmap allocator
@@ -152,7 +160,7 @@ impl Allocator {
                     .cast::<MaybeUninit<u8>>();
 
         // Build the usage-tracking bitmap
-        let superblock_size = block_size * Self::blocks_per_superblock();
+        let superblock_size = block_size * BLOCKS_PER_SUPERBLOCK;
         let usage_bitmap = std::iter::repeat(SuperblockBitmap::EMPTY)
                                      .map(AtomicSuperblockBitmap::new)
                                      .take(capacity / superblock_size)
@@ -173,9 +181,7 @@ impl Allocator {
     /// size and its superblock size. That quantity is machine-dependent and
     /// subjected to change in future versions of this crate, so please always
     /// call this function instead of relying on past results from it.
-    pub const fn blocks_per_superblock() -> usize {
-        mem::size_of::<usize>() * 8
-    }
+    pub const BLOCKS_PER_SUPERBLOCK: usize = BLOCKS_PER_SUPERBLOCK;
 
     /// Block size of this allocator (in bytes)
     ///
@@ -190,7 +196,7 @@ impl Allocator {
     /// This is the allocation granularity at which this allocator should
     /// exhibit optimal CPU performance.
     pub const fn superblock_size(&self) -> usize {
-        self.block_size() * Self::blocks_per_superblock()
+        self.block_size() * BLOCKS_PER_SUPERBLOCK
     }
 
     /// Size of this allocator's backing store (in bytes)
@@ -316,7 +322,7 @@ impl Allocator {
                         // We managed to allocate this hole
                         Ok(()) => {
                             let first_block_idx =
-                                superblock_idx * Self::blocks_per_superblock()
+                                superblock_idx * BLOCKS_PER_SUPERBLOCK
                                     + first_block_subidx;
                             break 'alloc_attempts first_block_idx;
                         },
@@ -338,9 +344,9 @@ impl Allocator {
                     // parameters of the active transaction.
                     let other_blocks = num_blocks - num_head_blocks;
                     let num_body_superblocks =
-                        other_blocks / Self::blocks_per_superblock();
+                        other_blocks / BLOCKS_PER_SUPERBLOCK;
                     let mut num_tail_blocks =
-                        other_blocks % Self::blocks_per_superblock();
+                        other_blocks % BLOCKS_PER_SUPERBLOCK;
 
                     // Try to allocate the body of the transaction
                     let mut transaction = match AllocTransaction::with_body(
@@ -375,7 +381,7 @@ impl Allocator {
                     // If needed, allocate one more body superblock.
                     // This can happen as a result of moving the hole forward:
                     //     |0011|1111|1110|0000| -> |0000|1111|1111|1000|
-                    if num_tail_blocks >= Self::blocks_per_superblock() {
+                    if num_tail_blocks >= BLOCKS_PER_SUPERBLOCK {
                         if let Err(observed_bitmap) =
                             transaction.try_extend_body()
                         {
@@ -383,7 +389,7 @@ impl Allocator {
                                                      observed_bitmap)?;
                             continue 'alloc_attempts;
                         } else {
-                            num_tail_blocks -= Self::blocks_per_superblock();
+                            num_tail_blocks -= BLOCKS_PER_SUPERBLOCK;
                         }
                     }
 
@@ -501,15 +507,15 @@ impl Allocator {
                                                      self.block_size());
 
         // Does our first block fall in the middle of a superblock?
-        let local_start_idx = block_idx % Self::blocks_per_superblock();
+        let local_start_idx = block_idx % BLOCKS_PER_SUPERBLOCK;
         if local_start_idx != 0 {
             // Compute index of that superblock
-            let superblock_idx = block_idx / Self::blocks_per_superblock();
+            let superblock_idx = block_idx / BLOCKS_PER_SUPERBLOCK;
 
             // Compute how many blocks are allocated within the superblock,
             // bearing in mind that the buffer may end there
             let local_len =
-                (Self::blocks_per_superblock() - local_start_idx)
+                (BLOCKS_PER_SUPERBLOCK - local_start_idx)
                     .min(end_block_idx - block_idx);
 
             // Deallocate leading buffer blocks in this first superblock
@@ -526,14 +532,14 @@ impl Allocator {
         // If control reached this point, block_idx is now at the start of a
         // superblock, so we can switch to faster superblock-wise deallocation.
         // Deallocate all superblocks until the one where end_block_idx resides.
-        let start_superblock_idx = block_idx / Self::blocks_per_superblock();
-        let end_superblock_idx = end_block_idx / Self::blocks_per_superblock();
+        let start_superblock_idx = block_idx / BLOCKS_PER_SUPERBLOCK;
+        let end_superblock_idx = end_block_idx / BLOCKS_PER_SUPERBLOCK;
         for superblock_idx in start_superblock_idx..end_superblock_idx {
             self.dealloc_superblock(superblock_idx);
         }
 
         // Advance block pointer, stop if all blocks were liberated
-        block_idx = end_superblock_idx * Self::blocks_per_superblock();
+        block_idx = end_superblock_idx * BLOCKS_PER_SUPERBLOCK;
         if block_idx == end_block_idx { return; }
 
         // Deallocate trailing buffer blocks in the last superblock

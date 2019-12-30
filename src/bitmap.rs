@@ -4,7 +4,7 @@
 //! be used as vectors of bits. This module provides an abstraction to ease
 //! correct manipulation of the inner layer of this data structure.
 
-use crate::Allocator;
+use crate::BLOCKS_PER_SUPERBLOCK;
 
 use std::{
     ops::{Add, BitAnd, BitOr, Not, Sub},
@@ -32,13 +32,13 @@ impl SuperblockBitmap {
     /// be 1 (allocated) and the number of bits that should be 1.
     pub fn new_mask(start: usize, len: usize) -> Self {
         // Check interface preconditions in debug builds
-        debug_assert!(start < Allocator::blocks_per_superblock(),
+        debug_assert!(start < BLOCKS_PER_SUPERBLOCK,
                       "Allocation start is out of superblock range");
-        debug_assert!(len <= (Allocator::blocks_per_superblock() - start),
+        debug_assert!(len <= (BLOCKS_PER_SUPERBLOCK - start),
                       "Allocation end is out of superblock range");
 
         // Handle the "full superblock" edge case without overflowing
-        if len == Allocator::blocks_per_superblock() {
+        if len == BLOCKS_PER_SUPERBLOCK {
             return Self(std::usize::MAX);
         }
 
@@ -50,11 +50,11 @@ impl SuperblockBitmap {
     /// at the end of the superblock
     pub fn new_head_mask(len: usize) -> Self {
         // Check interface preconditions in debug builds
-        debug_assert!(len <= Allocator::blocks_per_superblock(),
+        debug_assert!(len <= BLOCKS_PER_SUPERBLOCK,
                       "Requested head mask length is unfeasible");
 
         // Modulo needed to avoid going out-of-bounds for len == 0
-        const BBS: usize = Allocator::blocks_per_superblock();
+        const BBS: usize = BLOCKS_PER_SUPERBLOCK;
         Self::new_mask((BBS - len) % BBS, len)
     }
 
@@ -104,7 +104,7 @@ impl SuperblockBitmap {
         num_blocks: usize
     ) -> Result<usize, usize> {
         // Check interface preconditions in debug builds
-        debug_assert!(start_idx < Allocator::blocks_per_superblock(),
+        debug_assert!(start_idx < BLOCKS_PER_SUPERBLOCK,
                       "Search start index is out of superblock range");
         debug_assert_ne!(num_blocks, 0,
                          "Searching for zero blocks makes no sense");
@@ -114,8 +114,7 @@ impl SuperblockBitmap {
         let mut bits = self.0.rotate_right(start_idx as u32);
         loop {
             // How many blocks have we not looked at yet?
-            let mut remaining_blocks =
-                Allocator::blocks_per_superblock() - block_idx;
+            let mut remaining_blocks = BLOCKS_PER_SUPERBLOCK - block_idx;
 
             // Can we still find a suitably large hole in here?
             if num_blocks > remaining_blocks {
@@ -377,14 +376,12 @@ mod tests {
         assert!(EMPTY.is_mask());
 
         // Free space before/after
-        assert_eq!(EMPTY.free_blocks_at_start(),
-                   Allocator::blocks_per_superblock());
-        assert_eq!(EMPTY.free_blocks_at_end(),
-                   Allocator::blocks_per_superblock());
+        assert_eq!(EMPTY.free_blocks_at_start(), BLOCKS_PER_SUPERBLOCK);
+        assert_eq!(EMPTY.free_blocks_at_end(), BLOCKS_PER_SUPERBLOCK);
 
         // Hole search
-        for start_idx in 0..Allocator::blocks_per_superblock() {
-            let max_len = Allocator::blocks_per_superblock() - start_idx;
+        for start_idx in 0..BLOCKS_PER_SUPERBLOCK {
+            let max_len = BLOCKS_PER_SUPERBLOCK - start_idx;
             for len in 1..=max_len {
                 assert_eq!(EMPTY.search_free_blocks(start_idx, len),
                            Ok(start_idx));
@@ -394,7 +391,7 @@ mod tests {
         }
 
         // Other ways to create empty superblocks
-        for idx in 0..Allocator::blocks_per_superblock() {
+        for idx in 0..BLOCKS_PER_SUPERBLOCK {
             assert_eq!(SuperblockBitmap::new_mask(idx, 0), EMPTY);
         }
         assert_eq!(SuperblockBitmap::new_head_mask(0), EMPTY);
@@ -416,29 +413,22 @@ mod tests {
         assert_eq!(FULL.free_blocks_at_end(), 0);
 
         // Hole search
-        for start_idx in 1..Allocator::blocks_per_superblock() {
+        for start_idx in 1..BLOCKS_PER_SUPERBLOCK {
             assert_eq!(FULL.search_free_blocks(start_idx, 1), Err(0));
         }
 
         // Other ways to create full superblocks
-        assert_eq!(
-            SuperblockBitmap::new_mask(0, Allocator::blocks_per_superblock()),
-            FULL
-        );
-        assert_eq!(
-            SuperblockBitmap::new_head_mask(Allocator::blocks_per_superblock()),
-            FULL
-        );
-        assert_eq!(
-            SuperblockBitmap::new_tail_mask(Allocator::blocks_per_superblock()),
-            FULL
-        );
+        assert_eq!(SuperblockBitmap::new_mask(0, BLOCKS_PER_SUPERBLOCK), FULL);
+        assert_eq!(SuperblockBitmap::new_head_mask(BLOCKS_PER_SUPERBLOCK),
+                   FULL);
+        assert_eq!(SuperblockBitmap::new_tail_mask(BLOCKS_PER_SUPERBLOCK),
+                   FULL);
     }
 
     #[test]
     fn other_head_masks() {
         // Enumerate all non-empty and non-full head masks: |00000111|
-        for head_len in 1..Allocator::blocks_per_superblock() {
+        for head_len in 1..BLOCKS_PER_SUPERBLOCK {
             let head = SuperblockBitmap::new_head_mask(head_len);
 
             // Boolean properties
@@ -448,14 +438,13 @@ mod tests {
 
             // Free space before/after
             assert_eq!(head.free_blocks_at_start(),
-                       Allocator::blocks_per_superblock() - head_len);
+                       BLOCKS_PER_SUPERBLOCK - head_len);
             assert_eq!(head.free_blocks_at_end(), 0);
 
             // Hole search
-            for start_idx in 0..Allocator::blocks_per_superblock() {
-                let max_len =
-                    (Allocator::blocks_per_superblock() - start_idx)
-                        .saturating_sub(head_len);
+            for start_idx in 0..BLOCKS_PER_SUPERBLOCK {
+                let max_len = (BLOCKS_PER_SUPERBLOCK - start_idx)
+                                  .saturating_sub(head_len);
                 for len in 1..=max_len {
                     assert_eq!(head.search_free_blocks(start_idx, len),
                                Ok(start_idx));
@@ -474,7 +463,7 @@ mod tests {
     #[test]
     fn other_tail_masks() {
         // Enumerate all non-empty and non-full tail masks: |11100000|
-        for tail_len in 1..Allocator::blocks_per_superblock() {
+        for tail_len in 1..BLOCKS_PER_SUPERBLOCK {
             let tail = SuperblockBitmap::new_tail_mask(tail_len);
 
             // Boolean properties
@@ -485,13 +474,11 @@ mod tests {
             // Free space before/after
             assert_eq!(tail.free_blocks_at_start(), 0);
             assert_eq!(tail.free_blocks_at_end(),
-                       Allocator::blocks_per_superblock() - tail_len);
+                       BLOCKS_PER_SUPERBLOCK - tail_len);
 
             // Hole search
-            for start_idx in 0..Allocator::blocks_per_superblock() {
-                let max_len =
-                    Allocator::blocks_per_superblock()
-                        - start_idx.max(tail_len);
+            for start_idx in 0..BLOCKS_PER_SUPERBLOCK {
+                let max_len = BLOCKS_PER_SUPERBLOCK - start_idx.max(tail_len);
                 for len in 1..=max_len {
                     assert_eq!(tail.search_free_blocks(start_idx, len),
                                Ok(start_idx.max(tail_len)));
@@ -509,9 +496,8 @@ mod tests {
     fn central_masks() {
         // Enumerate all masks which start after the beginning of the superblock
         // and end before the end of the superblock
-        for mask_start_idx in 0..Allocator::blocks_per_superblock() {
-            let max_mask_len =
-                Allocator::blocks_per_superblock() - mask_start_idx.max(1);
+        for mask_start_idx in 0..BLOCKS_PER_SUPERBLOCK {
+            let max_mask_len = BLOCKS_PER_SUPERBLOCK - mask_start_idx.max(1);
             for mask_len in 1..=max_mask_len {
                 let mask = SuperblockBitmap::new_mask(mask_start_idx, mask_len);
                 let mask_end_idx = mask_start_idx + mask_len;
@@ -524,16 +510,16 @@ mod tests {
                 // Free space before/after
                 assert_eq!(mask.free_blocks_at_start(), mask_start_idx);
                 assert_eq!(mask.free_blocks_at_end(),
-                           Allocator::blocks_per_superblock() - mask_end_idx);
+                           BLOCKS_PER_SUPERBLOCK - mask_end_idx);
 
                 // Hole search
-                for start_idx in 0..Allocator::blocks_per_superblock() {
+                for start_idx in 0..BLOCKS_PER_SUPERBLOCK {
                     let first_hole_len =
                         mask_start_idx.saturating_sub(start_idx);
                     let second_hole_start =
                         (mask_start_idx + mask_len).max(start_idx);
                     let second_hole_len =
-                        Allocator::blocks_per_superblock() - second_hole_start;
+                        BLOCKS_PER_SUPERBLOCK - second_hole_start;
 
                     let max_len = first_hole_len.max(second_hole_len);
                     for len in 1..=first_hole_len {
@@ -554,9 +540,8 @@ mod tests {
     #[test]
     fn mask_operations() {
         // Generate a first mask and its negation
-        for mask1_start in 0..Allocator::blocks_per_superblock() {
-            let max_mask1_len =
-                Allocator::blocks_per_superblock() - mask1_start;
+        for mask1_start in 0..BLOCKS_PER_SUPERBLOCK {
+            let max_mask1_len = BLOCKS_PER_SUPERBLOCK - mask1_start;
             for mask1_len in mask1_start..=max_mask1_len {
                 let mask1 = SuperblockBitmap::new_mask(mask1_start, mask1_len);
                 let mask1_end = mask1_start + mask1_len;
@@ -577,7 +562,7 @@ mod tests {
                 );
                 assert_eq!(
                     neg_mask1.free_blocks_at_end(),
-                    if mask1_end == Allocator::blocks_per_superblock() {
+                    if mask1_end == BLOCKS_PER_SUPERBLOCK {
                         mask1_len
                     } else {
                         0
@@ -585,9 +570,8 @@ mod tests {
                 );
 
                 // Now generate another mask to try some mask operations
-                for mask2_start in 0..Allocator::blocks_per_superblock() {
-                    let max_mask2_len =
-                        Allocator::blocks_per_superblock() - mask2_start;
+                for mask2_start in 0..BLOCKS_PER_SUPERBLOCK {
+                    let max_mask2_len = BLOCKS_PER_SUPERBLOCK - mask2_start;
                     for mask2_len in 0..=max_mask2_len {
                         let mask2 = SuperblockBitmap::new_mask(mask2_start,
                                                                mask2_len);
@@ -615,14 +599,14 @@ mod tests {
                         assert!(mask1_and_2.is_mask());
                         assert_eq!(mask1_and_2.free_blocks_at_start(),
                                    if mask1_and_2.is_empty() {
-                                       Allocator::blocks_per_superblock()
+                                       BLOCKS_PER_SUPERBLOCK
                                    } else {
                                        mask1.free_blocks_at_start()
                                             .max(mask2.free_blocks_at_start())
                                    });
                         assert_eq!(mask1_and_2.free_blocks_at_end(),
                                    if mask1_and_2.is_empty() {
-                                       Allocator::blocks_per_superblock()
+                                       BLOCKS_PER_SUPERBLOCK
                                    } else {
                                        mask1.free_blocks_at_end()
                                             .max(mask2.free_blocks_at_end())
@@ -656,9 +640,8 @@ mod tests {
     #[test]
     fn atomic_sequential() {
         // Enumerate all possible initial masks
-        for orig_mask_start in 0..Allocator::blocks_per_superblock() {
-            let max_orig_mask_len =
-                Allocator::blocks_per_superblock() - orig_mask_start;
+        for orig_mask_start in 0..BLOCKS_PER_SUPERBLOCK {
+            let max_orig_mask_len = BLOCKS_PER_SUPERBLOCK - orig_mask_start;
             for orig_mask_len in orig_mask_start..=max_orig_mask_len {
                 let orig_mask = SuperblockBitmap::new_mask(orig_mask_start,
                                                            orig_mask_len);
@@ -688,10 +671,9 @@ mod tests {
                 }
 
                 // Enumerate every sensible (non-empty/non-full) allocation mask
-                for alloc_mask_start in 0..Allocator::blocks_per_superblock() {
-                    let max_alloc_mask_len =
-                        Allocator::blocks_per_superblock()
-                            - alloc_mask_start.max(1);
+                for alloc_mask_start in 0..BLOCKS_PER_SUPERBLOCK {
+                    let max_alloc_mask_len = BLOCKS_PER_SUPERBLOCK
+                                                 - alloc_mask_start.max(1);
                     for alloc_mask_len in 1..=max_alloc_mask_len {
                         let alloc_mask =
                             SuperblockBitmap::new_mask(alloc_mask_start,
@@ -743,10 +725,8 @@ mod tests {
         // For a certain amount of masks
         for _ in 0..NUM_MASKS {
             // Generate a random allocation mask
-            let mask_start_idx =
-                rng.gen_range(0, Allocator::blocks_per_superblock());
-            let max_mask_len =
-                Allocator::blocks_per_superblock() - mask_start_idx.max(1);
+            let mask_start_idx = rng.gen_range(0, BLOCKS_PER_SUPERBLOCK);
+            let max_mask_len = BLOCKS_PER_SUPERBLOCK - mask_start_idx.max(1);
             let mask_len = rng.gen_range(1, max_mask_len + 1);
             let mask = SuperblockBitmap::new_mask(mask_start_idx, mask_len);
 
@@ -806,9 +786,8 @@ mod tests {
         let mut rng = thread_rng();
         let mut gen_mask = || {
             let mask_start_idx =
-                rng.gen_range(0, Allocator::blocks_per_superblock());
-            let max_mask_len =
-                Allocator::blocks_per_superblock() - mask_start_idx.max(1);
+                rng.gen_range(0, BLOCKS_PER_SUPERBLOCK);
+            let max_mask_len = BLOCKS_PER_SUPERBLOCK - mask_start_idx.max(1);
             let mask_len = rng.gen_range(1, max_mask_len + 1);
             SuperblockBitmap::new_mask(mask_start_idx, mask_len)
         };
