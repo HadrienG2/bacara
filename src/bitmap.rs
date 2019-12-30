@@ -518,13 +518,27 @@ mod tests {
                 assert_eq!(mask.free_blocks_at_end(),
                            blocks_after_mask_start - mask_len);
 
-                // TODO: Hole search. Beware that there is one hole at the start
-                //       of the bitmap (of size `mask_start_idx`) and one at
-                //       the end of the bitmap (of size
-                //       `blocks_after_mask_start - mask_len`), and hole search
-                //       will jump to the one of the right if the one of the
-                //       left isn't big enough. We must reproduce that.
-                unimplemented!()
+                // Hole search
+                for start_idx in 0..Allocator::blocks_per_superblock() {
+                    let first_hole_len =
+                        mask_start_idx.saturating_sub(start_idx);
+                    let second_hole_start =
+                        (mask_start_idx + mask_len).max(start_idx);
+                    let second_hole_len =
+                        Allocator::blocks_per_superblock() - second_hole_start;
+
+                    let max_len = first_hole_len.max(second_hole_len);
+                    for len in 1..=first_hole_len {
+                        assert_eq!(mask.search_free_blocks(start_idx, len),
+                                   Ok(start_idx));
+                    }
+                    for len in (first_hole_len + 1)..max_len {
+                        assert_eq!(mask.search_free_blocks(start_idx, len),
+                                   Ok(second_hole_start));
+                    }
+                    assert_eq!(mask.search_free_blocks(start_idx, max_len+1),
+                               Err(second_hole_len));
+                }
             }
         }
     }
