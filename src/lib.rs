@@ -76,7 +76,7 @@ use std::{
 // Re-export allocator builder at the crate root
 pub use builder::Builder;
 
-// Re-export allocation transaction for other components
+// Re-export superblock bitmap struct for other modules' use
 pub(crate) use crate::bitmap::SuperblockBitmap;
 
 /// Number of blocks in a superblock
