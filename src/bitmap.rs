@@ -301,11 +301,14 @@ impl AtomicSuperblockBitmap {
         if (former_bitmap & mask).is_empty() {
             // All good, ready to return
             Ok(())
-        } else {
-            // Revert previous block allocation before exiting
+        } else if former_bitmap & mask != mask {
+            // Incorrect allocations occured, must revert them
             let allocated_bits = mask - former_bitmap;
             former_bitmap = self.fetch_sub(allocated_bits, failure);
             Err(former_bitmap - allocated_bits)
+        } else {
+            // Failed without incorrect allocations
+            Err(former_bitmap)
         }
     }
 
@@ -505,12 +508,13 @@ mod tests {
     #[test]
     fn central_masks() {
         // Enumerate all masks which start after the beginning of the superblock
-        // and end befor the end of the superblock
+        // and end before the end of the superblock
         for mask_start_idx in 0..Allocator::blocks_per_superblock() {
             let max_mask_len =
-                Allocator::blocks_per_superblock() - mask_start_idx;
-            for mask_len in 1..max_mask_len {
+                Allocator::blocks_per_superblock() - mask_start_idx.max(1);
+            for mask_len in 1..=max_mask_len {
                 let mask = SuperblockBitmap::new_mask(mask_start_idx, mask_len);
+                let mask_end_idx = mask_start_idx + mask_len;
 
                 // Boolean properties
                 assert!(!mask.is_empty());
@@ -519,7 +523,8 @@ mod tests {
 
                 // Free space before/after
                 assert_eq!(mask.free_blocks_at_start(), mask_start_idx);
-                assert_eq!(mask.free_blocks_at_end(), max_mask_len - mask_len);
+                assert_eq!(mask.free_blocks_at_end(),
+                           Allocator::blocks_per_superblock() - mask_end_idx);
 
                 // Hole search
                 for start_idx in 0..Allocator::blocks_per_superblock() {
@@ -685,8 +690,9 @@ mod tests {
                 // Enumerate every sensible (non-empty/non-full) allocation mask
                 for alloc_mask_start in 0..Allocator::blocks_per_superblock() {
                     let max_alloc_mask_len =
-                        Allocator::blocks_per_superblock() - alloc_mask_start;
-                    for alloc_mask_len in 1..max_alloc_mask_len {
+                        Allocator::blocks_per_superblock()
+                            - alloc_mask_start.max(1);
+                    for alloc_mask_len in 1..=max_alloc_mask_len {
                         let alloc_mask =
                             SuperblockBitmap::new_mask(alloc_mask_start,
                                                        alloc_mask_len);
@@ -713,5 +719,142 @@ mod tests {
         }
     }
 
-    // TODO: Test AtomicSuperblockBitmap in a multi-threaded environment
+    #[test]
+    #[ignore]
+    fn atomic_concurrent_mask_all() {
+        use rand::prelude::*;
+        use std::sync::Arc;
+
+        // Test configuration
+        const NUM_MASKS: usize = 1000;
+        const ITERS_PER_MASK: usize = 100_000;
+
+        // Set up what we need
+        let atomic_bitmap =
+            Arc::new(AtomicSuperblockBitmap::new(SuperblockBitmap::EMPTY));
+        let mut rng = thread_rng();
+
+        // For a certain amount of masks
+        for _ in 0..NUM_MASKS {
+            // Generate a random allocation mask
+            let mask_start_idx =
+                rng.gen_range(0, Allocator::blocks_per_superblock());
+            let max_mask_len =
+                Allocator::blocks_per_superblock() - mask_start_idx.max(1);
+            let mask_len = rng.gen_range(1, max_mask_len + 1);
+            let mask = SuperblockBitmap::new_mask(mask_start_idx, mask_len);
+
+            // Start a race between a thread trying to allocate with that mask
+            // and another thread trying to allocate everything
+            let atomic_bitmap_1 = atomic_bitmap.clone();
+            let atomic_bitmap_2 = atomic_bitmap.clone();
+            testbench::concurrent_test_2(
+                move || {
+                    for _ in 0..ITERS_PER_MASK {
+                        match atomic_bitmap_1.try_alloc_mask(
+                            mask,
+                            Ordering::Relaxed,
+                            Ordering::Relaxed
+                        ) {
+                            Ok(()) =>
+                                atomic_bitmap_1.dealloc_mask(mask,
+                                                             Ordering::Relaxed),
+                            Err(bad_mask) =>
+                                assert_eq!(bad_mask, SuperblockBitmap::FULL),
+                        }
+                    }
+                },
+                move || {
+                    for _ in 0..ITERS_PER_MASK {
+                        match atomic_bitmap_2.try_alloc_all(Ordering::Relaxed,
+                                                            Ordering::Relaxed) {
+                            Ok(()) =>
+                                atomic_bitmap_2.dealloc_all(Ordering::Relaxed),
+                            Err(bad_mask) =>
+                                assert_eq!(bad_mask, mask),
+                        }
+                    }
+                },
+            );
+
+            // Everything that has been allocated should now be deallocated
+            assert_eq!(atomic_bitmap.load(Ordering::Relaxed),
+                       SuperblockBitmap::EMPTY);
+        }
+    }
+
+
+    #[test]
+    #[ignore]
+    fn atomic_concurrent_mask_mask() {
+        use rand::prelude::*;
+        use std::sync::Arc;
+
+        // Test configuration
+        const NUM_MASKS: usize = 1000;
+        const ITERS_PER_MASK: usize = 20_000;
+
+        // Set up what we need
+        let atomic_bitmap =
+            Arc::new(AtomicSuperblockBitmap::new(SuperblockBitmap::EMPTY));
+        let mut rng = thread_rng();
+        let mut gen_mask = || {
+            let mask_start_idx =
+                rng.gen_range(0, Allocator::blocks_per_superblock());
+            let max_mask_len =
+                Allocator::blocks_per_superblock() - mask_start_idx.max(1);
+            let mask_len = rng.gen_range(1, max_mask_len + 1);
+            SuperblockBitmap::new_mask(mask_start_idx, mask_len)
+        };
+
+        // For a certain amount of masks
+        for _ in 0..NUM_MASKS {
+            // Generate a random allocation mask
+            let mask1 = gen_mask();
+            let mask2 = gen_mask();
+
+            // Start a race between a thread trying to allocate with that mask
+            // and another thread trying to allocate everything
+            let atomic_bitmap_1 = atomic_bitmap.clone();
+            let atomic_bitmap_2 = atomic_bitmap.clone();
+            testbench::concurrent_test_2(
+                move || {
+                    for _ in 0..ITERS_PER_MASK {
+                        match atomic_bitmap_1.try_alloc_mask(
+                            mask1,
+                            Ordering::Relaxed,
+                            Ordering::Relaxed
+                        ) {
+                            Ok(()) =>
+                                atomic_bitmap_1.dealloc_mask(mask1,
+                                                             Ordering::Relaxed),
+                            Err(bad_mask) =>
+                                assert!(bad_mask.is_empty()
+                                        || bad_mask == mask2),
+                        }
+                    }
+                },
+                move || {
+                    for _ in 0..ITERS_PER_MASK {
+                        match atomic_bitmap_2.try_alloc_mask(
+                            mask2,
+                            Ordering::Relaxed,
+                            Ordering::Relaxed
+                        ) {
+                            Ok(()) =>
+                                atomic_bitmap_2.dealloc_mask(mask2,
+                                                             Ordering::Relaxed),
+                            Err(bad_mask) =>
+                                assert!(bad_mask.is_empty()
+                                        || bad_mask == mask1),
+                        }
+                    }
+                },
+            );
+
+            // Everything that has been allocated should now be deallocated
+            assert_eq!(atomic_bitmap.load(Ordering::Relaxed),
+                       SuperblockBitmap::EMPTY);
+        }
+    }
 }
