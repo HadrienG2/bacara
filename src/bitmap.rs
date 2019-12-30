@@ -507,9 +507,9 @@ mod tests {
         // Enumerate all masks which start after the beginning of the superblock
         // and end befor the end of the superblock
         for mask_start_idx in 0..Allocator::blocks_per_superblock() {
-            let blocks_after_mask_start =
+            let max_mask_len =
                 Allocator::blocks_per_superblock() - mask_start_idx;
-            for mask_len in 1..blocks_after_mask_start {
+            for mask_len in 1..max_mask_len {
                 let mask = SuperblockBitmap::new_mask(mask_start_idx, mask_len);
 
                 // Boolean properties
@@ -519,8 +519,7 @@ mod tests {
 
                 // Free space before/after
                 assert_eq!(mask.free_blocks_at_start(), mask_start_idx);
-                assert_eq!(mask.free_blocks_at_end(),
-                           blocks_after_mask_start - mask_len);
+                assert_eq!(mask.free_blocks_at_end(), max_mask_len - mask_len);
 
                 // Hole search
                 for start_idx in 0..Allocator::blocks_per_superblock() {
@@ -553,7 +552,7 @@ mod tests {
         for mask1_start in 0..Allocator::blocks_per_superblock() {
             let max_mask1_len =
                 Allocator::blocks_per_superblock() - mask1_start;
-            for mask1_len in mask1_start..max_mask1_len {
+            for mask1_len in mask1_start..=max_mask1_len {
                 let mask1 = SuperblockBitmap::new_mask(mask1_start, mask1_len);
                 let mask1_end = mask1_start + mask1_len;
                 let neg_mask1 = !mask1;
@@ -584,7 +583,7 @@ mod tests {
                 for mask2_start in 0..Allocator::blocks_per_superblock() {
                     let max_mask2_len =
                         Allocator::blocks_per_superblock() - mask2_start;
-                    for mask2_len in 0..max_mask2_len {
+                    for mask2_len in 0..=max_mask2_len {
                         let mask2 = SuperblockBitmap::new_mask(mask2_start,
                                                                mask2_len);
 
@@ -631,7 +630,8 @@ mod tests {
                                    mask1.is_empty() && mask2.is_empty());
                         assert_eq!(mask1_or_2.is_full(),
                                    mask1.is_full() || mask2.is_full()
-                                   || (mask1_end >= mask2_start
+                                   || (mask1_start == 0
+                                          && mask1_end >= mask2_start
                                           && mask2_len == max_mask2_len));
                         assert_eq!(mask1_or_2.is_mask(),
                                    mask1.is_empty() || mask2.is_empty()
@@ -648,5 +648,70 @@ mod tests {
         }
     }
 
-    // TODO: Test AtomicSuperblockBitmap
+    #[test]
+    fn atomic_sequential() {
+        // Enumerate all possible initial masks
+        for orig_mask_start in 0..Allocator::blocks_per_superblock() {
+            let max_orig_mask_len =
+                Allocator::blocks_per_superblock() - orig_mask_start;
+            for orig_mask_len in orig_mask_start..=max_orig_mask_len {
+                let orig_mask = SuperblockBitmap::new_mask(orig_mask_start,
+                                                           orig_mask_len);
+
+                // Make an atomic version and check get_mut and load
+                let mut atomic_mask = AtomicSuperblockBitmap::new(orig_mask);
+                assert_eq!(*atomic_mask.get_mut(), orig_mask);
+                assert_eq!(atomic_mask.load(Ordering::Relaxed), orig_mask);
+
+                // Try the From-based route to do the same thing
+                let mut atomic_from = AtomicSuperblockBitmap::from(orig_mask);
+                assert_eq!(*atomic_from.get_mut(), orig_mask);
+                assert_eq!(atomic_from.load(Ordering::Relaxed), orig_mask);
+
+                // Try to allocate and deallocate everything
+                let alloc_all_result =
+                    atomic_mask.try_alloc_all(Ordering::Relaxed,
+                                              Ordering::Relaxed);
+                if orig_mask.is_empty() {
+                    assert_eq!(alloc_all_result, Ok(()));
+                    assert_eq!(*atomic_mask.get_mut(), SuperblockBitmap::FULL);
+                    atomic_mask.dealloc_all(Ordering::Relaxed);
+                    assert_eq!(*atomic_mask.get_mut(), SuperblockBitmap::EMPTY);
+                } else {
+                    assert_eq!(alloc_all_result, Err(orig_mask));
+                    assert_eq!(*atomic_mask.get_mut(), orig_mask);
+                }
+
+                // Enumerate every sensible (non-empty/non-full) allocation mask
+                for alloc_mask_start in 0..Allocator::blocks_per_superblock() {
+                    let max_alloc_mask_len =
+                        Allocator::blocks_per_superblock() - alloc_mask_start;
+                    for alloc_mask_len in 1..max_alloc_mask_len {
+                        let alloc_mask =
+                            SuperblockBitmap::new_mask(alloc_mask_start,
+                                                       alloc_mask_len);
+
+                        // Try to allocate with that mask
+                        let alloc_mask_result =
+                            atomic_mask.try_alloc_mask(alloc_mask,
+                                                       Ordering::Relaxed,
+                                                       Ordering::Relaxed);
+                        if (orig_mask & alloc_mask).is_empty() {
+                            assert_eq!(alloc_mask_result, Ok(()));
+                            assert_eq!(*atomic_mask.get_mut(),
+                                       orig_mask + alloc_mask);
+                            atomic_mask.dealloc_mask(alloc_mask,
+                                                     Ordering::Relaxed);
+                            assert_eq!(*atomic_mask.get_mut(), orig_mask);
+                        } else {
+                            assert_eq!(alloc_mask_result, Err(orig_mask));
+                            assert_eq!(*atomic_mask.get_mut(), orig_mask);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // TODO: Test AtomicSuperblockBitmap in a multi-threaded environment
 }
