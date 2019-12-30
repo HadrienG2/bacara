@@ -197,6 +197,7 @@ impl Sub for SuperblockBitmap {
 /// 1/better independence from the chosen superblock length and 2/clearer naming
 /// with respect to the work that we're doing here.
 #[derive(Debug, Default)]
+#[repr(transparent)]
 pub struct AtomicSuperblockBitmap(AtomicUsize);
 
 impl AtomicSuperblockBitmap {
@@ -207,7 +208,9 @@ impl AtomicSuperblockBitmap {
 
     /// Get a mutable reference to the underlying bitmap
     pub fn get_mut(&mut self) -> &mut SuperblockBitmap {
-        unsafe { &mut *(self.0.get_mut() as *mut _ as *mut SuperblockBitmap) }
+        unsafe {
+            &mut *(self.0.get_mut() as *mut usize as *mut SuperblockBitmap)
+        }
     }
 
     /// Load a value from the atomic bitmap
