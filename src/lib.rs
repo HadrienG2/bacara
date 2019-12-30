@@ -157,7 +157,8 @@ impl Allocator {
         //
         // This is safe because we've checked all preconditions of `Layout`
         // and `alloc()` during the `Builder` construction process, including
-        // the fact that capacity is not zero.
+        // the fact that capacity is not zero which is the one thing that makes
+        // `alloc::alloc()` unsafe.
         let backing_store_layout =
             Layout::from_size_align(capacity, block_align)
                    .expect("All Layout preconditions should have been checked");
