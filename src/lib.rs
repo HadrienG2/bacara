@@ -62,6 +62,9 @@ use crate::{
     transaction::AllocTransaction,
 };
 
+#[cfg(test)]
+use require_unsafe_in_body::require_unsafe_in_bodies;
+
 use std::{
     alloc::{self, Layout},
     mem::MaybeUninit,
@@ -121,6 +124,9 @@ pub struct Allocator {
     alignment: usize,
 }
 
+// `require_unsafe_in_bodies` is only enabled on development builds because it
+// requires procedural macros and that adds a lot to crate build times.
+#[cfg_attr(test, require_unsafe_in_bodies)]
 impl Allocator {
     /// Start building an allocator
     ///
@@ -143,6 +149,7 @@ impl Allocator {
     /// uphold all the preconditions listed as "must" bullet points in the
     /// corresponding `Builder` struct members' documentation, either in this
     /// constructor or other methods of Allocator.
+    #[cfg_attr(not(test), allow(unused_unsafe))]
     pub(crate) unsafe fn new_unchecked(block_align: usize,
                                        block_size: usize,
                                        capacity: usize) -> Self {
@@ -155,8 +162,10 @@ impl Allocator {
             Layout::from_size_align(capacity, block_align)
                    .expect("All Layout preconditions should have been checked");
         let backing_store_start =
-            NonNull::new(alloc::alloc(backing_store_layout))
-                    .unwrap_or_else(|| alloc::handle_alloc_error(backing_store_layout))
+            NonNull::new(unsafe { alloc::alloc(backing_store_layout) })
+                    .unwrap_or_else(|| {
+                        alloc::handle_alloc_error(backing_store_layout)
+                    })
                     .cast::<MaybeUninit<u8>>();
 
         // Build the usage-tracking bitmap
@@ -473,6 +482,7 @@ impl Allocator {
     ///
     /// `ptr` will be dangling after calling this function, and should neither
     /// be dereferenced nor passed to `dealloc_unbound` again.
+    #[cfg_attr(not(test), allow(unused_unsafe))]
     pub unsafe fn dealloc_unbound(&self, ptr: NonNull<[MaybeUninit<u8>]>) {
         // In debug builds, check that the input pointer does come from our
         // backing store, with all the properties that one would expect.
@@ -485,7 +495,10 @@ impl Allocator {
                       "Deallocated ptr starts after backing store");
         debug_assert_eq!(ptr_offset % self.block_size(), 0,
                          "Deallocated ptr doesn't start on a block boundary");
-        let ptr_len = ptr.as_ref().len();
+
+        // Check pointer length as well. This is safe because we requested a
+        // valid pointer as part of this function's safety preconditions.
+        let ptr_len = unsafe { ptr.as_ref() }.len();
         debug_assert!(ptr_len < self.capacity() - ptr_offset,
                       "Deallocated ptr overflows backing store");
         // NOTE: ptr_len may not be a multiple of the block size because we
