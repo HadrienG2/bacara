@@ -9,7 +9,7 @@ use crate::{BLOCKS_PER_SUPERBLOCK, SuperblockBitmap};
 /// encouraged to try translating its hole forward when allocation fails instead
 /// of rolling back the full memory allocation transaction right away.
 pub enum Hole {
-    /// Hole that is concentrated within a single superblock
+    /// Hole that fits within a single superblock
     SingleSuperblock {
         /// Superblock of interest
         superblock_idx: usize,
@@ -69,7 +69,7 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
                mut superblock_iter: SuperblockIter) -> (Self, Option<Hole>) {
         // Zero-sized holes are not worth the trouble of being supported here
         debug_assert_ne!(requested_blocks, 0,
-                         "No need for HoleSearch when inventing 0-sized holes");
+                         "No need for HoleSearch to invent a zero-sized hole");
 
         // Look at the first superblock. There must be one, since allocator
         // capacity cannot be zero per std::alloc rules.
@@ -122,23 +122,21 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
             );
         }
 
-        // If something went wrong, we need to reset `self.remaining_blocks`
-        self.remaining_blocks = self.requested_blocks;
-
         // Where did things go wrong?
         if bad_superblock_idx < self.current_superblock_idx {
             // Before the current superblock: this reduces the number of
             // previous blocks in the hole that is being investigated.
             let num_prev_superblocks =
                 self.current_superblock_idx - bad_superblock_idx - 1;
-            self.remaining_blocks -=
-                (observed_bitmap.free_blocks_at_end() as usize)
-                + num_prev_superblocks * BLOCKS_PER_SUPERBLOCK;
+            self.remaining_blocks =
+                self.requested_blocks
+                    - (observed_bitmap.free_blocks_at_end() as usize)
+                    + num_prev_superblocks * BLOCKS_PER_SUPERBLOCK;
         } else {
             // At the current superblock or after (the latter can happen if
             // allocation tried to shift the hole forward). Move to that
             // location if need be and update the current bitmap info.
-            while self.current_superblock_idx < bad_superblock_idx {
+            while bad_superblock_idx > self.current_superblock_idx {
                 let bitmap_opt = self.superblock_iter.next();
                 debug_assert!(bitmap_opt.is_some(),
                               "Allocation claims to have observed a block after
@@ -146,6 +144,7 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
                 self.current_superblock_idx += 1;
             }
             self.current_bitmap = observed_bitmap;
+            self.remaining_blocks = self.requested_blocks;
         }
 
         // Find the next hole
@@ -161,7 +160,7 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
         // Loop over superblocks, starting from the current one
         loop {
             // Holes should be emitted as soon as possible, and remaining_blocks
-            // should be reset every time a new hole is found.
+            // should be reset after an allocation failure.
             debug_assert_ne!(self.remaining_blocks, 0,
                              "A Hole has not been yielded at the right time, or
                               remaining_blocks has not been properly reset");
