@@ -249,15 +249,18 @@ impl AtomicSuperblockBitmap {
               .map_err(SuperblockBitmap)
     }
 
-    // TODO: When we know the final usage pattern, decide if some form of
-    //       compare_exchange_weak could be useful.
-
-    /// Atomically set bits which are set in "val" in the atomic bitmap (aka set
-    /// union) and return the previous value.
-    fn fetch_add(&self,
-                 val: SuperblockBitmap,
-                 order: Ordering) -> SuperblockBitmap {
-        SuperblockBitmap(self.0.fetch_or(val.0, order))
+    /// Variant of compare_exchange that's more efficient when used in a loop on
+    /// some platforms (those with LL/SC formalism), but can fail spuriously.
+    fn compare_exchange_weak(
+        &self,
+        current: SuperblockBitmap,
+        new: SuperblockBitmap,
+        success: Ordering,
+        failure: Ordering
+    ) -> Result<SuperblockBitmap, SuperblockBitmap> {
+        self.0.compare_exchange_weak(current.0, new.0, success, failure)
+              .map(SuperblockBitmap)
+              .map_err(SuperblockBitmap)
     }
 
     /// Atomically clear bits which are set in "val" in the atomic bitmap (aka
@@ -299,27 +302,27 @@ impl AtomicSuperblockBitmap {
                       "Inefficient call to try_alloc_mask with full mask, \
                        you should be using try_alloc_all instead");
 
-        // Set the required allocation bits, check which were already set
-        let mut former_bitmap = self.fetch_add(mask, success);
+        // Observe the initial value of the bitmap
+        let mut current = self.load(Ordering::Relaxed);
 
-        // Make sure that none of the target blocks were previously allocated
-        if (former_bitmap & mask).is_empty() {
-            // All good, ready to return
-            Ok(())
-        } else if former_bitmap & mask != mask {
-            // Incorrect allocations occured, must revert them
-            let allocated_bits = mask - former_bitmap;
-            former_bitmap = self.fetch_sub(allocated_bits, failure);
-            Err(former_bitmap - allocated_bits)
-        } else {
-            // Failed without incorrect allocations
-            Err(former_bitmap)
+        // Are the required blocks free as of the latest observation?
+        while (current & mask).is_empty() {
+            // If so, try to allocate the blocks
+            match self.compare_exchange_weak(current,
+                                             current + mask,
+                                             success,
+                                             failure) {
+                // If allocation succeeded, we're done
+                Ok(_) => return Ok(()),
+
+                // If allocation failed, update our view of the bitmap
+                Err(new) => current = new,
+            }
         }
-    }
 
-    // TODO: Consider adding a greedy variant of try_alloc_mask that leaves the
-    //       block allocated even if allocation did not succeed, if we find a
-    //       way to leverage it in future optimization.
+        // If control reached this point, the blocks aren't free
+        Err(current)
+    }
 
     /// Assuming a superblock is fully allocated, fully deallocate it
     pub fn dealloc_all(&self, order: Ordering) {
@@ -800,9 +803,10 @@ mod tests {
 
         // For a certain amount of masks
         for _ in 0..NUM_MASKS {
-            // Generate a random allocation mask
+            // Generate two random allocation masks
             let mask1 = gen_mask();
             let mask2 = gen_mask();
+            let has_conflict = !((mask1 & mask2).is_empty());
 
             // Start a race between a thread trying to allocate with that mask
             // and another thread trying to allocate everything
@@ -819,9 +823,10 @@ mod tests {
                             Ok(()) =>
                                 atomic_bitmap_1.dealloc_mask(mask1,
                                                              Ordering::Relaxed),
-                            Err(bad_mask) =>
-                                assert!(bad_mask.is_empty()
-                                        || bad_mask == mask2),
+                            Err(bad_mask) => {
+                                assert!(has_conflict);
+                                assert_eq!(bad_mask, mask2)
+                            }
                         }
                     }
                 },
@@ -835,9 +840,10 @@ mod tests {
                             Ok(()) =>
                                 atomic_bitmap_2.dealloc_mask(mask2,
                                                              Ordering::Relaxed),
-                            Err(bad_mask) =>
-                                assert!(bad_mask.is_empty()
-                                        || bad_mask == mask1),
+                            Err(bad_mask) => {
+                                assert!(has_conflict);
+                                assert_eq!(bad_mask, mask1);
+                            }
                         }
                     }
                 },
