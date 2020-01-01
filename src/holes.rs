@@ -295,6 +295,8 @@ mod tests {
         (8, BLOCKS_PER_SUPERBLOCK + 1),
         (8, 2 * BLOCKS_PER_SUPERBLOCK - 1),
         (8, 2 * BLOCKS_PER_SUPERBLOCK),
+        (8, 2 * BLOCKS_PER_SUPERBLOCK + 1),
+        (8, 3 * BLOCKS_PER_SUPERBLOCK - 1),
         (8, 3 * BLOCKS_PER_SUPERBLOCK),
         (8, 3 * BLOCKS_PER_SUPERBLOCK + 2),
         (8, 8 * BLOCKS_PER_SUPERBLOCK),
@@ -377,7 +379,8 @@ mod tests {
         }
     }
 
-    // TODO: Construct for more complex bitmaps
+    // TODO: Construct for a bitmap with one sliding hole of the right size
+    //       (truncated at the num_superblocks limit, of course)
     // TODO: Incorrect construction with empty iterator
     // TODO: Retrying and ending iteration
 }
