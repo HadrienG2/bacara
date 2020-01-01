@@ -320,7 +320,63 @@ mod tests {
         }
     }
 
-    // TODO: Construct for a fully empty bitmap
+    #[test]
+    fn build_empty() {
+        for &(num_superblocks, requested_blocks) in TEST_CONFIGURATIONS {
+            let (mut hole_search, first_hole) =
+                HoleSearch::new(requested_blocks,
+                                std::iter::repeat(SuperblockBitmap::EMPTY)
+                                          .take(num_superblocks)
+                                          .fuse());
+
+            assert_eq!(
+                first_hole,
+                if requested_blocks > num_superblocks * BLOCKS_PER_SUPERBLOCK {
+                    None
+                } else if requested_blocks <= BLOCKS_PER_SUPERBLOCK {
+                    Some(Hole::SingleSuperblock {
+                        superblock_idx: 0,
+                        first_block_subidx: 0,
+                    })
+                } else {
+                    Some(Hole::MultipleSuperblocks {
+                        body_start_idx: 0,
+                        num_head_blocks: 0,
+                    })
+                }
+            );
+
+            assert_eq!(hole_search.requested_blocks, requested_blocks);
+
+            let trailing_blocks =
+                if requested_blocks % BLOCKS_PER_SUPERBLOCK == 0 {
+                    BLOCKS_PER_SUPERBLOCK
+                } else {
+                    requested_blocks % BLOCKS_PER_SUPERBLOCK
+                };
+            let previous_superblocks =
+                (requested_blocks - trailing_blocks) / BLOCKS_PER_SUPERBLOCK;
+            assert_eq!(hole_search.remaining_blocks,
+                       previous_superblocks.saturating_sub(num_superblocks)
+                           * BLOCKS_PER_SUPERBLOCK
+                           + trailing_blocks);
+
+            assert_eq!(hole_search.current_superblock_idx,
+                       previous_superblocks.min(num_superblocks));
+
+            assert_eq!(hole_search.current_bitmap, SuperblockBitmap::EMPTY);
+
+            assert_eq!(hole_search.current_search_subidx, 0);
+
+            assert_eq!(hole_search.superblock_iter.next(),
+                       if previous_superblocks < num_superblocks - 1 {
+                           Some(SuperblockBitmap::EMPTY)
+                       } else {
+                           None
+                       });
+        }
+    }
+
     // TODO: Construct for more complex bitmaps
     // TODO: Incorrect construction with empty iterator
     // TODO: Retrying and ending iteration
