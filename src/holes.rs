@@ -8,6 +8,7 @@ use crate::{BLOCKS_PER_SUPERBLOCK, SuperblockBitmap};
 /// The hole can be bigger than requested, so the memory allocation code is
 /// encouraged to try translating its hole forward when allocation fails instead
 /// of rolling back the full memory allocation transaction right away.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Hole {
     /// Hole that fits within a single superblock
     SingleSuperblock {
@@ -137,11 +138,9 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
             // allocation tried to shift the hole forward). Move to that
             // location if need be and update the current bitmap info.
             while bad_superblock_idx > self.current_superblock_idx {
-                let bitmap_opt = self.superblock_iter.next();
-                debug_assert!(bitmap_opt.is_some(),
+                debug_assert!(self.next_superblock().is_some(),
                               "Allocation claims to have observed a block after
                                the end of the allocator's backing store");
-                self.current_superblock_idx += 1;
             }
             self.current_bitmap = observed_bitmap;
             self.remaining_blocks = self.requested_blocks;
@@ -186,8 +185,7 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
                     let previous_blocks =
                         self.requested_blocks - self.remaining_blocks;
                     let num_head_blocks =
-                        (previous_blocks % BLOCKS_PER_SUPERBLOCK)
-                            as u32;
+                        (previous_blocks % BLOCKS_PER_SUPERBLOCK) as u32;
                     let num_prev_superblocks =
                         previous_blocks / BLOCKS_PER_SUPERBLOCK;
 
@@ -223,9 +221,8 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
                     // We found all we need within a single superblock
                     Ok(first_block_subidx) => {
                         // If we need to resume the search, we'll do so at the
-                        // next block index. This guarantees that hole search
-                        // completes in a finite number of steps.
-                        self.current_search_subidx = first_block_subidx + 1;
+                        // current hole's start.
+                        self.current_search_subidx = first_block_subidx;
 
                         // Return this hole to the client
                         return Some(Hole::SingleSuperblock {
@@ -245,8 +242,86 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
             }
 
             // Go to the next superblock, propagate end of iteration
-            self.current_bitmap = self.superblock_iter.next()?;
-            self.current_superblock_idx += 1;
+            self.current_bitmap = self.next_superblock()?;
         }
     }
+
+    /// Go to the next superblock (if any) and return its bitmap
+    fn next_superblock(&mut self) -> Option<SuperblockBitmap> {
+        debug_assert_eq!(self.current_search_subidx, 0,
+                         "Moved to next superblock before end of block iteration
+                          or failed to reset block iteration state.");
+        self.current_superblock_idx += 1;
+        self.superblock_iter.next()
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Suggestions of (number of superblocks, request size) tuples to try out
+    ///
+    /// Need to try with 8 superblocks in order to allow a maximally complex
+    /// pattern (skip two superblocks, allocate a head, three body superblocks
+    /// and a tail, don't touch the last superblock). Trying with minimal
+    /// resources, like one or two superblocks, is also a good idea.
+    ///
+    /// Request sizes were defined for 8 superblocks in order to cover a broad
+    /// range of situations, then adapted for 1 or 2 superblocks.
+    const TEST_CONFIGURATIONS: &[(usize, usize)] = &[
+        (1, 1),
+        (1, BLOCKS_PER_SUPERBLOCK / 2),
+        (1, BLOCKS_PER_SUPERBLOCK - 1),
+        (1, BLOCKS_PER_SUPERBLOCK),
+        (1, BLOCKS_PER_SUPERBLOCK + 1),
+        (1, 2 * BLOCKS_PER_SUPERBLOCK),
+
+        (2, 1),
+        (2, BLOCKS_PER_SUPERBLOCK / 2),
+        (2, BLOCKS_PER_SUPERBLOCK - 1),
+        (2, BLOCKS_PER_SUPERBLOCK),
+        (2, BLOCKS_PER_SUPERBLOCK + 1),
+        (2, 2 * BLOCKS_PER_SUPERBLOCK - 1),
+        (2, 2 * BLOCKS_PER_SUPERBLOCK),
+        (2, 2 * BLOCKS_PER_SUPERBLOCK + 1),
+        (2, 3 * BLOCKS_PER_SUPERBLOCK),
+
+        (8, 1),
+        (8, BLOCKS_PER_SUPERBLOCK / 2),
+        (8, BLOCKS_PER_SUPERBLOCK - 1),
+        (8, BLOCKS_PER_SUPERBLOCK),
+        (8, BLOCKS_PER_SUPERBLOCK + 1),
+        (8, 2 * BLOCKS_PER_SUPERBLOCK - 1),
+        (8, 2 * BLOCKS_PER_SUPERBLOCK),
+        (8, 3 * BLOCKS_PER_SUPERBLOCK),
+        (8, 3 * BLOCKS_PER_SUPERBLOCK + 2),
+        (8, 8 * BLOCKS_PER_SUPERBLOCK),
+        (8, 8 * BLOCKS_PER_SUPERBLOCK + 1),
+        (8, 9 * BLOCKS_PER_SUPERBLOCK),
+    ];
+
+    #[test]
+    fn build_full() {
+        for &(num_superblocks, requested_blocks) in TEST_CONFIGURATIONS {
+            let (mut hole_search, first_hole) =
+                HoleSearch::new(requested_blocks,
+                                std::iter::repeat(SuperblockBitmap::FULL)
+                                          .take(num_superblocks)
+                                          .fuse());
+            assert_eq!(first_hole, None);
+            assert_eq!(hole_search.requested_blocks, requested_blocks);
+            assert_eq!(hole_search.remaining_blocks, requested_blocks);
+            assert_eq!(hole_search.current_superblock_idx, num_superblocks);
+            assert_eq!(hole_search.current_bitmap, SuperblockBitmap::FULL);
+            assert_eq!(hole_search.current_search_subidx, 0);
+            assert_eq!(hole_search.superblock_iter.next(), None);
+        }
+    }
+
+    // TODO: Construct for a fully empty bitmap
+    // TODO: Construct for more complex bitmaps
+    // TODO: Incorrect construction with empty iterator
+    // TODO: Retrying and ending iteration
 }
