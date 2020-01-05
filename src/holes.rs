@@ -516,4 +516,5 @@ mod tests {
     }
 
     // TODO: Retrying and ending iteration
+    // TODO: Tester avec des trous un peu trop petits et un peu trop grands
 }
