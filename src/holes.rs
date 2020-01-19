@@ -329,9 +329,8 @@ mod tests {
                                               0,
                                               0,
                                               num_superblocks));
-
-            assert_eq!(hole_search.current_search_subidx, 0);
-
+            assert_eq!(hole_search.current_search_subidx,
+                       predict_current_search_subidx(requested_blocks, 0, 0));
             check_superblock_iter(hole_search, num_superblocks);
         }
     }
@@ -364,9 +363,10 @@ mod tests {
                                               0,
                                               hole_blocks,
                                               num_superblocks));
-
-            assert_eq!(hole_search.current_search_subidx, 0);
-
+            assert_eq!(hole_search.current_search_subidx,
+                       predict_current_search_subidx(requested_blocks,
+                                                     0,
+                                                     hole_blocks));
             check_superblock_iter(hole_search, num_superblocks);
         }
     }
@@ -404,23 +404,10 @@ mod tests {
                                                   hole_shift,
                                                   requested_blocks,
                                                   num_superblocks));
-
-                // Convert the hole block-wise shift in superblocks+tail
-                let start_subidx = (hole_shift % BLOCKS_PER_SUPERBLOCK) as u32;
-
-                // Compute number of free blocks in the first hole superblock
-                let first_blocks =
-                    (BLOCKS_PER_SUPERBLOCK - start_subidx as usize)
-                        .min(requested_blocks);
-
-                if first_blocks == requested_blocks {
-                    // Hole fits in a single superblock
-                    assert_eq!(hole_search.current_search_subidx, start_subidx);
-                } else {
-                    // Hole has a head/body/tail layout
-                    assert_eq!(hole_search.current_search_subidx, 0);
-                }
-
+                assert_eq!(hole_search.current_search_subidx,
+                           predict_current_search_subidx(requested_blocks,
+                                                         hole_shift,
+                                                         requested_blocks));
                 check_superblock_iter(hole_search, num_superblocks);
             }
         }
@@ -647,6 +634,18 @@ mod tests {
 
         // Then we can just predict the hole's bitmap at that index
         hole_bitmap(actual_superblock_idx, hole_offset, hole_size)
+    }
+
+    fn predict_current_search_subidx(requested_size: usize,
+                                     hole_offset: usize,
+                                     hole_size: usize) -> u32 {
+        if let Some(Hole::SingleSuperblock { first_block_subidx, .. })
+            = predict_search_result(requested_size, hole_offset, hole_size)
+        {
+            first_block_subidx
+        } else {
+            0
+        }
     }
 
     // Check that the hole search iterator is in sync with its superblock idx,
