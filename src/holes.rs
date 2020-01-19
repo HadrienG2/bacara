@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn build_full() {
         for &(num_superblocks, requested_blocks) in TEST_CONFIGURATIONS {
-            let (mut hole_search, first_hole) =
+            let (hole_search, first_hole) =
                 HoleSearch::new(requested_blocks,
                                 std::iter::repeat(SuperblockBitmap::FULL)
                                           .take(num_superblocks)
@@ -319,14 +319,14 @@ mod tests {
             assert_eq!(hole_search.current_superblock_idx, num_superblocks);
             assert_eq!(hole_search.current_bitmap, SuperblockBitmap::FULL);
             assert_eq!(hole_search.current_search_subidx, 0);
-            assert_eq!(hole_search.superblock_iter.next(), None);
+            check_superblock_iter(hole_search, num_superblocks);
         }
     }
 
     #[test]
     fn build_empty() {
         for &(num_superblocks, requested_blocks) in TEST_CONFIGURATIONS {
-            let (mut hole_search, first_hole) =
+            let (hole_search, first_hole) =
                 HoleSearch::new(requested_blocks,
                                 std::iter::repeat(SuperblockBitmap::EMPTY)
                                           .take(num_superblocks)
@@ -371,12 +371,7 @@ mod tests {
 
             assert_eq!(hole_search.current_search_subidx, 0);
 
-            assert_eq!(hole_search.superblock_iter.next(),
-                       if previous_superblocks < num_superblocks - 1 {
-                           Some(SuperblockBitmap::EMPTY)
-                       } else {
-                           None
-                       });
+            check_superblock_iter(hole_search, num_superblocks);
         }
     }
 
@@ -389,7 +384,7 @@ mod tests {
             let num_blocks = num_superblocks * BLOCKS_PER_SUPERBLOCK;
             for hole_shift in 0..=(num_blocks - requested_blocks) {
                 // Start the hole search and validate its results
-                let (mut hole_search, first_hole) =
+                let (hole_search, first_hole) =
                     HoleSearch::new(requested_blocks,
                                     hole_iter(hole_shift, requested_blocks)
                                         .take(num_superblocks));
@@ -423,12 +418,6 @@ mod tests {
                                    requested_blocks as u32
                                ));
                     assert_eq!(hole_search.current_search_subidx, start_subidx);
-                    assert_eq!(hole_search.superblock_iter.next(),
-                               if start_superblock_idx < num_superblocks - 1 {
-                                   Some(SuperblockBitmap::FULL)
-                               } else {
-                                   None
-                               });
                 } else {
                     // Hole has a head/body/tail layout
                     let body_start_idx =
@@ -458,15 +447,9 @@ mod tests {
                                    trailing_blocks as u32
                                ));
                     assert_eq!(hole_search.current_search_subidx, 0);
-                    let is_before_end =
-                        hole_search.current_superblock_idx < num_superblocks-1;
-                    assert_eq!(hole_search.superblock_iter.next(),
-                               if is_before_end {
-                                   Some(SuperblockBitmap::FULL)
-                               } else {
-                                   None
-                               });
                 }
+
+                check_superblock_iter(hole_search, num_superblocks);
             }
         }
     }
@@ -479,6 +462,7 @@ mod tests {
 
     // TODO: Retrying and ending iteration
     // TODO: Tester avec des trous un peu trop petits et un peu trop grands
+    // TODO: Tester avec une suite de deux trous dès le départ
 
     // Generate an infinite bitmap which is entirely allocated except for a hole
     // of a certain size at a certain (block-wise) offset.
@@ -530,5 +514,16 @@ mod tests {
                 co.yield_(SuperblockBitmap::FULL).await;
             }
         }).into_iter()
+    }
+
+    // Check that the hole search iterator is in sync with its superblock idx,
+    // must be called at the end of a test since it consumes the iterator.
+    fn check_superblock_iter<It>(hole_search: HoleSearch<It>,
+                                 num_superblocks: usize)
+        where It: Iterator<Item=SuperblockBitmap>,
+    {
+        assert_eq!(hole_search.superblock_iter.count(),
+                   (num_superblocks - hole_search.current_superblock_idx)
+                       .saturating_sub(1));
     }
 }
