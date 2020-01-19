@@ -345,32 +345,74 @@ mod tests {
         }
 
         // Try to search a hole in that bitmap and see how it goes
-        let (hole_search, hole) = HoleSearch::new(requested_blocks,
-                                                  make_bitmap_iter());
-        assert_eq!(hole, predict_search_result(requested_blocks,
-                                               hole_offset,
-                                               hole_size));
-        assert_eq!(hole_search.requested_blocks, requested_blocks);
-        assert_eq!(hole_search.remaining_blocks,
-                   predict_remaining_blocks(requested_blocks,
-                                            hole_offset,
-                                            hole_size,
-                                            num_superblocks));
-        assert_eq!(hole_search.current_superblock_idx,
-                   predict_current_superblock_idx(requested_blocks,
-                                                  hole_offset,
-                                                  hole_size,
-                                                  num_superblocks));
-        assert_eq!(hole_search.current_bitmap,
-                   predict_current_bitmap(requested_blocks,
-                                          hole_offset,
-                                          hole_size,
-                                          num_superblocks));
-        assert_eq!(hole_search.current_search_subidx,
-                   predict_current_search_subidx(requested_blocks,
-                                                 hole_offset,
-                                                 hole_size));
-        check_superblock_iter(hole_search, num_superblocks);
+        test_build(requested_blocks,
+                   hole_offset,
+                   hole_size,
+                   num_superblocks,
+                   make_bitmap_iter(),
+                   |idx| hole_bitmap(idx, hole_offset, hole_size));
+    }
+
+    #[test]
+    fn build_two_holes() {
+        for &(num_superblocks, requested_blocks) in TEST_CONFIGURATIONS {
+            let num_blocks = num_superblocks * BLOCKS_PER_SUPERBLOCK;
+            // Fight combinatorics by only testing extreme cases for the size
+            // of the first hole.
+            'hole: for hole1_size in [1, requested_blocks - 1].iter().copied() {
+                // We're aiming for two consecutive holes...
+                // - A first hole that's too small
+                // - A second hole that's just the right size
+                // ...separated by at least one occupied block.
+                if hole1_size == 0 || hole1_size >= requested_blocks {
+                    continue 'hole;
+                }
+                let hole2_size = requested_blocks;
+                let min_full_size = hole1_size + 1 + hole2_size;
+                if min_full_size > num_blocks { continue 'hole; }
+
+                // Fight combinatorics by bounding first block offset to one SB
+                let hole1_offset_max =
+                    (BLOCKS_PER_SUPERBLOCK).min(num_blocks - min_full_size);
+                for hole1_offset in (0..=hole1_offset_max).step_by(4) {
+                    // Second hole must come at least one block after, and again
+                    // we must keep combinatorics in check.
+                    let hole2_offset_min = hole1_offset + hole1_size + 1;
+                    let hole2_offset_max =
+                        (hole2_offset_min + BLOCKS_PER_SUPERBLOCK)
+                            .min(num_blocks - hole2_size);
+                    for hole2_offset in (hole2_offset_min..=hole2_offset_max)
+                                            .step_by(4) {
+                        // Finally, we call into the test backend
+                        test_build_two_holes(requested_blocks,
+                                             hole1_offset,
+                                             hole1_size,
+                                             hole2_offset,
+                                             hole2_size,
+                                             num_superblocks);
+                    }
+                }
+            }
+        }
+    }
+
+    fn test_build_two_holes(requested_blocks: usize,
+                            hole1_offset: usize,
+                            hole1_size: usize,
+                            hole2_offset: usize,
+                            hole2_size: usize,
+                            num_superblocks: usize) {
+        // We don't test the iterator in this case, as it's too expensive
+        test_build(requested_blocks,
+                   hole2_offset,
+                   hole2_size,
+                   num_superblocks,
+                   hole_iter(hole1_offset, hole1_size)
+                       .zip(hole_iter(hole2_offset, hole2_size))
+                       .map(|(bitmap1, bitmap2)| bitmap1 & bitmap2)
+                       .take(num_superblocks),
+                   |idx| hole_bitmap(idx, hole1_offset, hole1_size)
+                             & hole_bitmap(idx, hole2_offset, hole2_size));
     }
 
     #[test]
@@ -380,7 +422,43 @@ mod tests {
     }
 
     // TODO: Retrying and ending iteration
-    // TODO: Tester avec une suite de deux trous (trop court -> OK)
+
+    // Test HoleSearch construction on a bitmap with a single "main" hole,
+    // possibly preceded by smaller ones that can't fulfill the user request.
+    fn test_build(requested_blocks: usize,
+                  main_hole_offset: usize,
+                  main_hole_size: usize,
+                  num_superblocks: usize,
+                  bitmap_iter: impl Iterator<Item=SuperblockBitmap>,
+                  bitmap_oracle: impl FnOnce(usize) -> SuperblockBitmap) {
+        let (hole_search, hole) = HoleSearch::new(requested_blocks,
+                                                  bitmap_iter);
+        assert_eq!(hole, predict_search_result(requested_blocks,
+                                               main_hole_offset,
+                                               main_hole_size));
+        assert_eq!(hole_search.requested_blocks, requested_blocks);
+        assert_eq!(hole_search.remaining_blocks,
+                   predict_remaining_blocks(requested_blocks,
+                                            main_hole_offset,
+                                            main_hole_size,
+                                            num_superblocks));
+        assert_eq!(hole_search.current_superblock_idx,
+                   predict_current_superblock_idx(requested_blocks,
+                                                  main_hole_offset,
+                                                  main_hole_size,
+                                                  num_superblocks));
+        assert_eq!(hole_search.current_bitmap,
+                   predict_current_bitmap(requested_blocks,
+                                          main_hole_offset,
+                                          main_hole_size,
+                                          bitmap_oracle,
+                                          num_superblocks));
+        assert_eq!(hole_search.current_search_subidx,
+                   predict_current_search_subidx(requested_blocks,
+                                                 main_hole_offset,
+                                                 main_hole_size));
+        check_superblock_iter(hole_search, num_superblocks);
+    }
 
     // Generate an infinite bitmap which is entirely allocated except for a hole
     // of a certain size at a certain (block-wise) offset.
@@ -435,6 +513,10 @@ mod tests {
     }
 
     // Predict a given superblock of the above hole iterator
+    //
+    // Can be used as an independent validation of the output of hole_iter, or
+    // as a way to compute a specific bitmap element in constant time instead of
+    // iterating through hole_iter in linear time (but faster).
     fn hole_bitmap(superblock_idx: usize,
                    hole_offset: usize,
                    hole_size: usize) -> SuperblockBitmap {
@@ -471,7 +553,8 @@ mod tests {
         SuperblockBitmap::FULL
     }
 
-    // Predict the result of a hole search on a bitmap with a single hole
+    // Predict the result of a hole search on a bitmap with a single suitable
+    // hole, possibly preceded by some unsuitable ones.
     fn predict_search_result(requested_size: usize,
                              hole_offset: usize,
                              hole_size: usize) -> Option<Hole> {
@@ -506,7 +589,8 @@ mod tests {
         }
     }
 
-    // Predict "remaining blocks" state on a bitmap with a single hole
+    // Predict "remaining blocks" state on a bitmap with a single suitable hole,
+    // possibly preceded by some unsuitable ones.
     fn predict_remaining_blocks(requested_size: usize,
                                 hole_offset: usize,
                                 hole_size: usize,
@@ -547,7 +631,8 @@ mod tests {
         }
     }
 
-    // Predict "current superblock" state on a bitmap with a single hole
+    // Predict "current superblock" state on a bitmap with a single suitable
+    // hole, possibly preceded by some unsuitable ones
     fn predict_current_superblock_idx(requested_size: usize,
                                       hole_offset: usize,
                                       hole_size: usize,
@@ -575,11 +660,15 @@ mod tests {
         }
     }
 
-    // Predict "current bitmap" state on a bitmap with a single hole
-    fn predict_current_bitmap(requested_size: usize,
-                              hole_offset: usize,
-                              hole_size: usize,
-                              num_superblocks: usize) -> SuperblockBitmap {
+    // Predict "current bitmap" state on a bitmap with a single suitable hole,
+    // given an oracle that can provide the bitmap pattern of any superblock
+    fn predict_current_bitmap(
+        requested_size: usize,
+        hole_offset: usize,
+        hole_size: usize,
+        bitmap_oracle: impl FnOnce(usize) -> SuperblockBitmap,
+        num_superblocks: usize
+    ) -> SuperblockBitmap {
         // current_superblock_idx gives us mostly what we want, but will go out
         // of sync with current_bitmap when reaching the end of iteration.
         let actual_superblock_idx =
@@ -590,9 +679,11 @@ mod tests {
                 .min(num_superblocks - 1);
 
         // Then we can just predict the hole's bitmap at that index
-        hole_bitmap(actual_superblock_idx, hole_offset, hole_size)
+        bitmap_oracle(actual_superblock_idx)
     }
 
+    // Predict "current search subidx" state on a bitmap with a single suitable
+    // hole, possibly preceded by some unsuitable ones.
     fn predict_current_search_subidx(requested_size: usize,
                                      hole_offset: usize,
                                      hole_size: usize) -> u32 {
