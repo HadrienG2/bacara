@@ -313,6 +313,7 @@ mod tests {
                 HoleSearch::new(requested_blocks,
                                 std::iter::repeat(SuperblockBitmap::FULL)
                                           .take(num_superblocks));
+
             assert_eq!(hole, predict_search_result(requested_blocks, 0, 0));
             assert_eq!(hole_search.requested_blocks, requested_blocks);
             assert_eq!(hole_search.remaining_blocks,
