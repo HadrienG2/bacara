@@ -369,7 +369,7 @@ mod tests {
             let num_blocks = num_superblocks * BLOCKS_PER_SUPERBLOCK;
             'hole: for hole1_size in [1, requested_blocks - 1].iter().copied() {
                 // We're aiming for two consecutive holes...
-                // - A first hole that's too small
+                // - A first hole that's too small, but does exist
                 // - A second hole that's just the right size
                 // ...separated by at least one occupied block.
                 if hole1_size == 0 || hole1_size >= requested_blocks {
@@ -389,8 +389,7 @@ mod tests {
                     let hole2_offset_max =
                         (hole2_offset_min + BLOCKS_PER_SUPERBLOCK)
                             .min(num_blocks - hole2_size);
-                    for hole2_offset in (hole2_offset_min..=hole2_offset_max)
-                                            .step_by(4) {
+                    for hole2_offset in hole2_offset_min..=hole2_offset_max {
                         // We don't test the iterator in this case, as we've
                         // already tested it in the single-hole test.
                         let bitmap_iter =
