@@ -311,8 +311,7 @@ mod tests {
             let (hole_search, hole) =
                 HoleSearch::new(requested_blocks,
                                 std::iter::repeat(SuperblockBitmap::FULL)
-                                          .take(num_superblocks)
-                                          .fuse());
+                                          .take(num_superblocks));
             assert_eq!(hole, predict_search_result(requested_blocks, 0, 0));
             assert_eq!(hole_search.requested_blocks, requested_blocks);
             assert_eq!(hole_search.remaining_blocks,
@@ -333,8 +332,7 @@ mod tests {
             let (hole_search, hole) =
                 HoleSearch::new(requested_blocks,
                                 std::iter::repeat(SuperblockBitmap::EMPTY)
-                                          .take(num_superblocks)
-                                          .fuse());
+                                          .take(num_superblocks));
 
             let hole_blocks = num_superblocks * BLOCKS_PER_SUPERBLOCK;
             assert_eq!(hole, predict_search_result(requested_blocks,
@@ -500,8 +498,7 @@ mod tests {
         }).into_iter()
     }
 
-    // Predict the result of a hole search, knowing what hole was actually
-    // available (for multiple holes, specify the first hole that fits, if any)
+    // Predict the result of a hole search on a bitmap with a single hole
     fn predict_search_result(requested_size: usize,
                              hole_offset: usize,
                              hole_size: usize) -> Option<Hole> {
@@ -536,11 +533,12 @@ mod tests {
         }
     }
 
-    // Predict "remaining blocks" state
+    // Predict "remaining blocks" state on a bitmap with a single hole
     fn predict_remaining_blocks(requested_size: usize,
                                 hole_offset: usize,
                                 hole_size: usize,
                                 num_superblocks: usize) -> usize {
+        // The result is easiest to predict starting from search results
         match predict_search_result(requested_size,
                                     hole_offset,
                                     hole_size) {
