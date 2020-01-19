@@ -432,6 +432,7 @@ mod tests {
         HoleSearch::new(1, std::iter::empty());
     }
 
+    // TODO: Tester hole_iter pour chaque configuration évaluée
     // TODO: Retrying and ending iteration
     // TODO: Tester avec des trous un peu trop petits et un peu trop grands
     // TODO: Tester avec une suite de deux trous (trop court -> OK)
@@ -486,6 +487,43 @@ mod tests {
                 co.yield_(SuperblockBitmap::FULL).await;
             }
         }).into_iter()
+    }
+
+    // Predict a given superblock of the above hole iterator
+    fn hole_bitmap(superblock_idx: usize,
+                   hole_offset: usize,
+                   hole_size: usize) -> SuperblockBitmap {
+        // Before hole
+        let hole_start_superblock = hole_offset / BLOCKS_PER_SUPERBLOCK;
+        if superblock_idx < hole_start_superblock {
+            return SuperblockBitmap::FULL;
+        }
+
+        // At hole start
+        let hole_start_subidx = hole_offset % BLOCKS_PER_SUPERBLOCK;
+        let first_blocks =
+            hole_size.min(BLOCKS_PER_SUPERBLOCK - hole_start_subidx);
+        if superblock_idx == hole_start_superblock {
+            return !SuperblockBitmap::new_mask(hole_start_subidx as u32,
+                                               first_blocks as u32);
+        }
+
+        // Inside hole body
+        let other_hole_blocks = hole_size - first_blocks;
+        let hole_body_superblocks = other_hole_blocks / BLOCKS_PER_SUPERBLOCK;
+        let hole_body_end = hole_start_superblock + 1 + hole_body_superblocks;
+        if superblock_idx < hole_body_end {
+            return SuperblockBitmap::EMPTY;
+        }
+
+        // At hole tail
+        let hole_tail_blocks = other_hole_blocks % BLOCKS_PER_SUPERBLOCK;
+        if hole_tail_blocks != 0 && superblock_idx == hole_body_end {
+            return !SuperblockBitmap::new_tail_mask(hole_tail_blocks as u32);
+        }
+
+        // After hole
+        SuperblockBitmap::FULL
     }
 
     // Predict the result of a hole search on a bitmap with a single hole
@@ -607,37 +645,8 @@ mod tests {
                                            num_superblocks)
                 .min(num_superblocks - 1);
 
-        // TODO: Extract the rest into a more general predict_hole_bitmap() and
-        //       use that to test hole_iter
-
-        // By construction, the hole falls inside of the bitmap, and the hole
-        // search must have considered it. We can be on the first hole block...
-        let hole_start_superblock = hole_offset / BLOCKS_PER_SUPERBLOCK;
-        assert!(actual_superblock_idx >= hole_start_superblock);
-        let hole_start_subidx = hole_offset % BLOCKS_PER_SUPERBLOCK;
-        let first_blocks =
-            hole_size.min(BLOCKS_PER_SUPERBLOCK - hole_start_subidx);
-        if actual_superblock_idx == hole_start_superblock {
-            return !SuperblockBitmap::new_mask(hole_start_subidx as u32,
-                                               first_blocks as u32);
-        }
-
-        // ...or somewhere inside the hole's body...
-        let other_hole_blocks = hole_size - first_blocks;
-        let hole_body_superblocks = other_hole_blocks / BLOCKS_PER_SUPERBLOCK;
-        let hole_body_end = hole_start_superblock + 1 + hole_body_superblocks;
-        if actual_superblock_idx < hole_body_end {
-            return SuperblockBitmap::EMPTY;
-        }
-
-        // ...or at the hole's tail...
-        let hole_tail_blocks = other_hole_blocks % BLOCKS_PER_SUPERBLOCK;
-        if hole_tail_blocks != 0 && actual_superblock_idx == hole_body_end {
-            return !SuperblockBitmap::new_tail_mask(hole_tail_blocks as u32);
-        }
-
-        // ...or otherwise we're after the hole
-        SuperblockBitmap::FULL
+        // Then we can just predict the hole's bitmap at that index
+        hole_bitmap(actual_superblock_idx, hole_offset, hole_size)
     }
 
     // Check that the hole search iterator is in sync with its superblock idx,
