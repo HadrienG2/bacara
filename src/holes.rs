@@ -556,16 +556,16 @@ mod tests {
     // Predict the result of a hole search on a bitmap with a single suitable
     // hole, possibly preceded by some unsuitable ones.
     fn predict_search_result(requested_size: usize,
-                             hole_offset: usize,
-                             hole_size: usize) -> Option<Hole> {
+                             main_hole_offset: usize,
+                             main_hole_size: usize) -> Option<Hole> {
         // Search will fail if request is too big
-        if hole_size < requested_size {
+        if main_hole_size < requested_size {
             return None;
         }
 
         // Convert the hole block-wise shift in superblocks+tail
-        let superblock_idx = hole_offset / BLOCKS_PER_SUPERBLOCK;
-        let start_subidx = hole_offset % BLOCKS_PER_SUPERBLOCK;
+        let superblock_idx = main_hole_offset / BLOCKS_PER_SUPERBLOCK;
+        let start_subidx = main_hole_offset % BLOCKS_PER_SUPERBLOCK;
 
         // Dertermine number of blocks after hole start in initial superblock
         let blocks_after_start = BLOCKS_PER_SUPERBLOCK - start_subidx;
@@ -592,20 +592,20 @@ mod tests {
     // Predict "remaining blocks" state on a bitmap with a single suitable hole,
     // possibly preceded by some unsuitable ones.
     fn predict_remaining_blocks(requested_size: usize,
-                                hole_offset: usize,
-                                hole_size: usize,
+                                main_hole_offset: usize,
+                                main_hole_size: usize,
                                 num_superblocks: usize) -> usize {
         // This result is easiest to predict starting from search results
         match predict_search_result(requested_size,
-                                    hole_offset,
-                                    hole_size) {
+                                    main_hole_offset,
+                                    main_hole_size) {
             // If search failed, the end of the bitmap was reached
             None => {
-                let hole_end = hole_offset + hole_size;
+                let hole_end = main_hole_offset + main_hole_size;
                 let bitmap_end = num_superblocks * BLOCKS_PER_SUPERBLOCK;
                 if hole_end == bitmap_end {
                     // If the hole reached there, remaining_blocks wasn't reset
-                    requested_size - hole_size
+                    requested_size - main_hole_size
                 } else {
                     // If the hole stopped before, remaining_blocks was reset
                     requested_size
@@ -634,13 +634,13 @@ mod tests {
     // Predict "current superblock" state on a bitmap with a single suitable
     // hole, possibly preceded by some unsuitable ones
     fn predict_current_superblock_idx(requested_size: usize,
-                                      hole_offset: usize,
-                                      hole_size: usize,
+                                      main_hole_offset: usize,
+                                      main_hole_size: usize,
                                       num_superblocks: usize) -> usize {
         // This result is easiest to predict starting from search results
         match predict_search_result(requested_size,
-                                    hole_offset,
-                                    hole_size) {
+                                    main_hole_offset,
+                                    main_hole_size) {
             // If search failed, the end of the bitmap was reached
             None => num_superblocks,
 
@@ -664,8 +664,8 @@ mod tests {
     // given an oracle that can provide the bitmap pattern of any superblock
     fn predict_current_bitmap(
         requested_size: usize,
-        hole_offset: usize,
-        hole_size: usize,
+        main_hole_offset: usize,
+        main_hole_size: usize,
         bitmap_oracle: impl FnOnce(usize) -> SuperblockBitmap,
         num_superblocks: usize
     ) -> SuperblockBitmap {
@@ -673,8 +673,8 @@ mod tests {
         // of sync with current_bitmap when reaching the end of iteration.
         let actual_superblock_idx =
             predict_current_superblock_idx(requested_size,
-                                           hole_offset,
-                                           hole_size,
+                                           main_hole_offset,
+                                           main_hole_size,
                                            num_superblocks)
                 .min(num_superblocks - 1);
 
@@ -685,10 +685,12 @@ mod tests {
     // Predict "current search subidx" state on a bitmap with a single suitable
     // hole, possibly preceded by some unsuitable ones.
     fn predict_current_search_subidx(requested_size: usize,
-                                     hole_offset: usize,
-                                     hole_size: usize) -> u32 {
+                                     main_hole_offset: usize,
+                                     main_hole_size: usize) -> u32 {
         if let Some(Hole::SingleSuperblock { first_block_subidx, .. })
-            = predict_search_result(requested_size, hole_offset, hole_size)
+            = predict_search_result(requested_size,
+                                    main_hole_offset,
+                                    main_hole_size)
         {
             first_block_subidx
         } else {
