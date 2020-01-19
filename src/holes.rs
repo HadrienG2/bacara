@@ -315,7 +315,11 @@ mod tests {
                                           .fuse());
             assert_eq!(hole, predict_search_result(requested_blocks, 0, 0));
             assert_eq!(hole_search.requested_blocks, requested_blocks);
-            assert_eq!(hole_search.remaining_blocks, requested_blocks);
+            assert_eq!(hole_search.remaining_blocks,
+                       predict_remaining_blocks(requested_blocks,
+                                                0,
+                                                0,
+                                                num_superblocks));
             assert_eq!(hole_search.current_superblock_idx, num_superblocks);
             assert_eq!(hole_search.current_bitmap, SuperblockBitmap::FULL);
             assert_eq!(hole_search.current_search_subidx, 0);
@@ -336,8 +340,12 @@ mod tests {
             assert_eq!(hole, predict_search_result(requested_blocks,
                                                    0,
                                                    hole_blocks));
-
             assert_eq!(hole_search.requested_blocks, requested_blocks);
+            assert_eq!(hole_search.remaining_blocks,
+                       predict_remaining_blocks(requested_blocks,
+                                                0,
+                                                hole_blocks,
+                                                num_superblocks));
 
             let trailing_blocks =
                 if requested_blocks % BLOCKS_PER_SUPERBLOCK == 0 {
@@ -347,10 +355,6 @@ mod tests {
                 };
             let previous_superblocks =
                 (requested_blocks - trailing_blocks) / BLOCKS_PER_SUPERBLOCK;
-            assert_eq!(hole_search.remaining_blocks,
-                       previous_superblocks.saturating_sub(num_superblocks)
-                           * BLOCKS_PER_SUPERBLOCK
-                           + trailing_blocks);
 
             assert_eq!(hole_search.current_superblock_idx,
                        previous_superblocks.min(num_superblocks));
@@ -380,8 +384,12 @@ mod tests {
                 assert_eq!(hole, predict_search_result(requested_blocks,
                                                        hole_shift,
                                                        requested_blocks));
-
                 assert_eq!(hole_search.requested_blocks, requested_blocks);
+                assert_eq!(hole_search.remaining_blocks,
+                           predict_remaining_blocks(requested_blocks,
+                                                    hole_shift,
+                                                    requested_blocks,
+                                                    num_superblocks));
 
                 // Convert the hole block-wise shift in superblocks+tail
                 let start_superblock_idx = hole_shift / BLOCKS_PER_SUPERBLOCK;
@@ -394,7 +402,6 @@ mod tests {
 
                 if first_blocks == requested_blocks {
                     // Hole fits in a single superblock
-                    assert_eq!(hole_search.remaining_blocks, requested_blocks);
                     assert_eq!(hole_search.current_superblock_idx,
                                start_superblock_idx);
                     assert_eq!(hole_search.current_bitmap,
@@ -417,7 +424,6 @@ mod tests {
                         };
                     let previous_superblocks =
                         (other_blocks-trailing_blocks) / BLOCKS_PER_SUPERBLOCK;
-                    assert_eq!(hole_search.remaining_blocks, trailing_blocks);
                     assert_eq!(hole_search.current_superblock_idx,
                                body_start_idx + previous_superblocks);
                     assert_eq!(hole_search.current_bitmap,
@@ -527,6 +533,46 @@ mod tests {
                 body_start_idx: superblock_idx + 1,
                 num_head_blocks: blocks_after_start as u32,
             })
+        }
+    }
+
+    // Predict "remaining blocks" state
+    fn predict_remaining_blocks(requested_size: usize,
+                                hole_offset: usize,
+                                hole_size: usize,
+                                num_superblocks: usize) -> usize {
+        match predict_search_result(requested_size,
+                                    hole_offset,
+                                    hole_size) {
+            // If search failed, the end of the bitmap was reached
+            None => {
+                let hole_end = hole_offset + hole_size;
+                let bitmap_end = num_superblocks * BLOCKS_PER_SUPERBLOCK;
+                if hole_end == bitmap_end {
+                    // If the hole reached there, remaining_blocks wasn't reset
+                    requested_size - hole_size
+                } else {
+                    // If the hole stopped before, remaining_blocks was reset
+                    requested_size
+                }
+            }
+
+            // On single-superblock allocs, remaining_blocks isn't updated
+            Some(Hole::SingleSuperblock { .. }) => requested_size,
+
+            // On multi-superblock allocs, remaining_blocks reflects the number
+            // of remaining blocks when the last superblock was investigated.
+            Some(Hole::MultipleSuperblocks { num_head_blocks, .. }) => {
+                let non_head_blocks = requested_size - num_head_blocks as usize;
+                let tail_blocks = non_head_blocks % BLOCKS_PER_SUPERBLOCK;
+                if tail_blocks != 0 {
+                    // That would be the tail blocks, if any...
+                    tail_blocks
+                } else {
+                    // ...or else the last fully allocated body superblock
+                    BLOCKS_PER_SUPERBLOCK
+                }
+            }
         }
     }
 
