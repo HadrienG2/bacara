@@ -321,36 +321,32 @@ mod tests {
             ].iter().copied() {
                 if hole_size > num_blocks { continue 'hole; }
                 for hole_offset in 0..=(num_blocks - hole_size) {
-                    test_build_single_hole(requested_blocks,
-                                           hole_offset,
-                                           hole_size,
-                                           num_superblocks);
+                    // Recipe for a bitmap iterator with num_superblocks and a
+                    // single "hole" of free memory
+                    let make_bitmap_iter = || hole_iter(hole_offset, hole_size)
+                                                  .take(num_superblocks);
+
+                    // Bitmap oracle which should be equivalent to random access
+                    // to the above iterator, within its range
+                    let bitmap_oracle =
+                        |sb_idx| hole_bitmap(sb_idx, hole_offset, hole_size);
+
+                    // Let's check that they march
+                    for (sb_idx, bitmap) in make_bitmap_iter().enumerate() {
+                        assert_eq!(bitmap, bitmap_oracle(sb_idx));
+                    }
+
+                    // And now we can test that HoleSearch works as respected
+                    // on this single-hole bitmap
+                    test_build(requested_blocks,
+                               hole_offset,
+                               hole_size,
+                               num_superblocks,
+                               make_bitmap_iter(),
+                               bitmap_oracle);
                 }
             }
         }
-    }
-
-    fn test_build_single_hole(requested_blocks: usize,
-                              hole_offset: usize,
-                              hole_size: usize,
-                              num_superblocks: usize) {
-        // This is a recipe for a bitmap iterator with a "hole" of free memory
-        let make_bitmap_iter = || {
-            hole_iter(hole_offset, hole_size).take(num_superblocks)
-        };
-
-        // Test that the iterator behaves as expected
-        for (idx, bitmap) in make_bitmap_iter().enumerate() {
-            assert_eq!(bitmap, hole_bitmap(idx, hole_offset, hole_size));
-        }
-
-        // Try to search a hole in that bitmap and see how it goes
-        test_build(requested_blocks,
-                   hole_offset,
-                   hole_size,
-                   num_superblocks,
-                   make_bitmap_iter(),
-                   |idx| hole_bitmap(idx, hole_offset, hole_size));
     }
 
     #[test]
@@ -383,36 +379,30 @@ mod tests {
                             .min(num_blocks - hole2_size);
                     for hole2_offset in (hole2_offset_min..=hole2_offset_max)
                                             .step_by(4) {
-                        // Finally, we call into the test backend
-                        test_build_two_holes(requested_blocks,
-                                             hole1_offset,
-                                             hole1_size,
-                                             hole2_offset,
-                                             hole2_size,
-                                             num_superblocks);
+                        // We don't test the iterator in this case, as we've
+                        // already tested int in the single-hole test.
+                        let bitmap_iter =
+                            hole_iter(hole1_offset, hole1_size)
+                                .zip(hole_iter(hole2_offset, hole2_size))
+                                .map(|(bitmap1, bitmap2)| { bitmap1 & bitmap2 })
+                                .take(num_superblocks);
+                        let bitmap_oracle =
+                            |superblock_idx| hole_bitmap(superblock_idx,
+                                                     hole1_offset,
+                                                     hole1_size)
+                                                 & hole_bitmap(superblock_idx,
+                                                               hole2_offset,
+                                                               hole2_size);
+                        test_build(requested_blocks,
+                                   hole2_offset,
+                                   hole2_size,
+                                   num_superblocks,
+                                   bitmap_iter,
+                                   bitmap_oracle);
                     }
                 }
             }
         }
-    }
-
-    fn test_build_two_holes(requested_blocks: usize,
-                            hole1_offset: usize,
-                            hole1_size: usize,
-                            hole2_offset: usize,
-                            hole2_size: usize,
-                            num_superblocks: usize) {
-        // We don't test the iterator in this case, as it's too expensive
-        test_build(requested_blocks,
-                   hole2_offset,
-                   hole2_size,
-                   num_superblocks,
-                   hole_iter(hole1_offset, hole1_size)
-                       .zip(hole_iter(hole2_offset, hole2_size))
-                       .map(|(bitmap1, bitmap2)| bitmap1 & bitmap2)
-                       .take(num_superblocks),
-                   |idx| hole_bitmap(idx, hole1_offset, hole1_size)
-                             & hole_bitmap(idx, hole2_offset, hole2_size));
     }
 
     #[test]
