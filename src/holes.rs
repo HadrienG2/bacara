@@ -259,6 +259,7 @@ impl<SuperblockIter> HoleSearch<SuperblockIter>
 
 #[cfg(test)]
 mod tests {
+    use crate::div_round_up;
     use super::*;
 
 
@@ -606,14 +607,13 @@ mod tests {
                 superblock_idx
             }
 
-            // For multi-superblock allocs, report tail or last body superblock
+            // For multi-superblock allocs, report last hole superblock
             Some(Hole::MultipleSuperblocks { body_start_idx,
                                              num_head_blocks }) => {
-                let non_head_blocks = requested_size - num_head_blocks as usize;
-                let body_superblocks = non_head_blocks / BLOCKS_PER_SUPERBLOCK;
-                let body_end_idx = body_start_idx + body_superblocks - 1;
-                let tail_blocks = non_head_blocks % BLOCKS_PER_SUPERBLOCK;
-                body_end_idx + (tail_blocks != 0) as usize
+                let trailing_blocks = requested_size - num_head_blocks as usize;
+                let trailing_superblocks =
+                    div_round_up(trailing_blocks, BLOCKS_PER_SUPERBLOCK);
+                body_start_idx + trailing_superblocks - 1
             }
         }
     }
