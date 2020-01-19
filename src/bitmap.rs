@@ -20,7 +20,7 @@ const BLOCKS_PER_SUPERBLOCK: u32 = crate::BLOCKS_PER_SUPERBLOCK as u32;
 /// This bitmap can be used for two purposes: to specify a sequence of blocks
 /// that we _want_ to allocate within a superblock (an allocation mask), and to
 /// describe which blocks are _currently_ allocated in a superblock.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct SuperblockBitmap(usize);
 
@@ -146,6 +146,16 @@ impl SuperblockBitmap {
             bits = bits.rotate_right(allocated_blocks);
             block_idx += allocated_blocks;
         }
+    }
+}
+
+impl std::fmt::Debug for SuperblockBitmap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Little-endian binary printout is used to display block occupation
+        // status in bitmap iteration order
+        write!(f, "SuperblockBitmap({:0width$b})",
+               self.0.reverse_bits(),
+               width = BLOCKS_PER_SUPERBLOCK as usize)
     }
 }
 

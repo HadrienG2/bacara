@@ -324,8 +324,12 @@ mod tests {
                                                       0,
                                                       0,
                                                       num_superblocks));
+            assert_eq!(hole_search.current_bitmap,
+                       predict_current_bitmap(requested_blocks,
+                                              0,
+                                              0,
+                                              num_superblocks));
 
-            assert_eq!(hole_search.current_bitmap, SuperblockBitmap::FULL);
             assert_eq!(hole_search.current_search_subidx, 0);
 
             check_superblock_iter(hole_search, num_superblocks);
@@ -355,8 +359,11 @@ mod tests {
                                                       0,
                                                       hole_blocks,
                                                       num_superblocks));
-
-            assert_eq!(hole_search.current_bitmap, SuperblockBitmap::EMPTY);
+            assert_eq!(hole_search.current_bitmap,
+                       predict_current_bitmap(requested_blocks,
+                                              0,
+                                              hole_blocks,
+                                              num_superblocks));
 
             assert_eq!(hole_search.current_search_subidx, 0);
 
@@ -392,6 +399,11 @@ mod tests {
                                                           hole_shift,
                                                           requested_blocks,
                                                           num_superblocks));
+                assert_eq!(hole_search.current_bitmap,
+                           predict_current_bitmap(requested_blocks,
+                                                  hole_shift,
+                                                  requested_blocks,
+                                                  num_superblocks));
 
                 // Convert the hole block-wise shift in superblocks+tail
                 let start_subidx = (hole_shift % BLOCKS_PER_SUPERBLOCK) as u32;
@@ -403,25 +415,9 @@ mod tests {
 
                 if first_blocks == requested_blocks {
                     // Hole fits in a single superblock
-                    assert_eq!(hole_search.current_bitmap,
-                               !SuperblockBitmap::new_mask(
-                                   start_subidx,
-                                   requested_blocks as u32
-                               ));
                     assert_eq!(hole_search.current_search_subidx, start_subidx);
                 } else {
                     // Hole has a head/body/tail layout
-                    let other_blocks = requested_blocks - first_blocks;
-                    let trailing_blocks =
-                        if other_blocks % BLOCKS_PER_SUPERBLOCK == 0 {
-                            BLOCKS_PER_SUPERBLOCK
-                        } else {
-                            other_blocks % BLOCKS_PER_SUPERBLOCK
-                        };
-                    assert_eq!(hole_search.current_bitmap,
-                               SuperblockBitmap::new_tail_mask(
-                                   trailing_blocks as u32
-                               ));
                     assert_eq!(hole_search.current_search_subidx, 0);
                 }
 
@@ -581,7 +577,9 @@ mod tests {
             None => num_superblocks,
 
             // For single-superblock allocs, report allocation index
-            Some(Hole::SingleSuperblock { superblock_idx, .. }) => superblock_idx,
+            Some(Hole::SingleSuperblock { superblock_idx, .. }) => {
+                superblock_idx
+            }
 
             // For multi-superblock allocs, report tail or last body superblock
             Some(Hole::MultipleSuperblocks { body_start_idx,
@@ -593,6 +591,53 @@ mod tests {
                 body_end_idx + (tail_blocks != 0) as usize
             }
         }
+    }
+
+    // Predict "current bitmap" state on a bitmap with a single hole
+    fn predict_current_bitmap(requested_size: usize,
+                              hole_offset: usize,
+                              hole_size: usize,
+                              num_superblocks: usize) -> SuperblockBitmap {
+        // current_superblock_idx gives us mostly what we want, but will go out
+        // of sync with current_bitmap when reaching the end of iteration.
+        let actual_superblock_idx =
+            predict_current_superblock_idx(requested_size,
+                                           hole_offset,
+                                           hole_size,
+                                           num_superblocks)
+                .min(num_superblocks - 1);
+
+        // TODO: Extract the rest into a more general predict_hole_bitmap() and
+        //       use that to test hole_iter
+
+        // By construction, the hole falls inside of the bitmap, and the hole
+        // search must have considered it. We can be on the first hole block...
+        let hole_start_superblock = hole_offset / BLOCKS_PER_SUPERBLOCK;
+        assert!(actual_superblock_idx >= hole_start_superblock);
+        let hole_start_subidx = hole_offset % BLOCKS_PER_SUPERBLOCK;
+        let first_blocks =
+            hole_size.min(BLOCKS_PER_SUPERBLOCK - hole_start_subidx);
+        if actual_superblock_idx == hole_start_superblock {
+            return !SuperblockBitmap::new_mask(hole_start_subidx as u32,
+                                               first_blocks as u32);
+        }
+
+        // ...or somewhere inside the hole's body...
+        let other_hole_blocks = hole_size - first_blocks;
+        let hole_body_superblocks = other_hole_blocks / BLOCKS_PER_SUPERBLOCK;
+        let hole_body_end = hole_start_superblock + 1 + hole_body_superblocks;
+        if actual_superblock_idx < hole_body_end {
+            return SuperblockBitmap::EMPTY;
+        }
+
+        // ...or at the hole's tail...
+        let hole_tail_blocks = other_hole_blocks % BLOCKS_PER_SUPERBLOCK;
+        if hole_tail_blocks != 0 && actual_superblock_idx == hole_body_end {
+            return !SuperblockBitmap::new_tail_mask(hole_tail_blocks as u32);
+        }
+
+        // ...or otherwise we're after the hole
+        SuperblockBitmap::FULL
     }
 
     // Check that the hole search iterator is in sync with its superblock idx,
