@@ -321,19 +321,19 @@ mod tests {
             ].iter().copied() {
                 if hole_size > num_blocks { continue 'hole; }
                 for hole_offset in 0..=(num_blocks - hole_size) {
-                    test_build_with_hole(requested_blocks,
-                                         hole_offset,
-                                         hole_size,
-                                         num_superblocks);
+                    test_build_single_hole(requested_blocks,
+                                           hole_offset,
+                                           hole_size,
+                                           num_superblocks);
                 }
             }
         }
     }
 
-    fn test_build_with_hole(requested_blocks: usize,
-                            hole_offset: usize,
-                            hole_size: usize,
-                            num_superblocks: usize) {
+    fn test_build_single_hole(requested_blocks: usize,
+                              hole_offset: usize,
+                              hole_size: usize,
+                              num_superblocks: usize) {
         // This is a recipe for a bitmap iterator with a "hole" of free memory
         let make_bitmap_iter = || {
             hole_iter(hole_offset, hole_size).take(num_superblocks)
