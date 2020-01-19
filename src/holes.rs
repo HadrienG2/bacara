@@ -307,11 +307,23 @@ mod tests {
     ];
 
     #[test]
+    fn build_no_hole() {
+        for &(num_superblocks, requested_blocks) in TEST_CONFIGURATIONS {
+            test_build(requested_blocks,
+                       0,
+                       0,
+                       num_superblocks,
+                       std::iter::repeat(SuperblockBitmap::FULL)
+                           .take(num_superblocks),
+                       |_idx| SuperblockBitmap::FULL);
+        }
+    }
+
+    #[test]
     fn build_single_hole() {
         for &(num_superblocks, requested_blocks) in TEST_CONFIGURATIONS {
             let num_blocks = num_superblocks * BLOCKS_PER_SUPERBLOCK;
             'hole: for hole_size in [
-                0,
                 requested_blocks.saturating_sub(BLOCKS_PER_SUPERBLOCK),
                 requested_blocks.saturating_sub(1),
                 requested_blocks,
@@ -319,7 +331,7 @@ mod tests {
                 requested_blocks+BLOCKS_PER_SUPERBLOCK,
                 num_blocks
             ].iter().copied() {
-                if hole_size > num_blocks { continue 'hole; }
+                if hole_size == 0 || hole_size > num_blocks { continue 'hole; }
                 for hole_offset in 0..=(num_blocks - hole_size) {
                     // Recipe for a bitmap iterator with num_superblocks and a
                     // single "hole" of free memory
@@ -352,9 +364,9 @@ mod tests {
     #[test]
     fn build_two_holes() {
         for &(num_superblocks, requested_blocks) in TEST_CONFIGURATIONS {
-            let num_blocks = num_superblocks * BLOCKS_PER_SUPERBLOCK;
             // Fight combinatorics by only testing extreme cases for the size
             // of the first hole.
+            let num_blocks = num_superblocks * BLOCKS_PER_SUPERBLOCK;
             'hole: for hole1_size in [1, requested_blocks - 1].iter().copied() {
                 // We're aiming for two consecutive holes...
                 // - A first hole that's too small
@@ -380,7 +392,7 @@ mod tests {
                     for hole2_offset in (hole2_offset_min..=hole2_offset_max)
                                             .step_by(4) {
                         // We don't test the iterator in this case, as we've
-                        // already tested int in the single-hole test.
+                        // already tested it in the single-hole test.
                         let bitmap_iter =
                             hole_iter(hole1_offset, hole1_size)
                                 .zip(hole_iter(hole2_offset, hole2_size))
@@ -390,9 +402,9 @@ mod tests {
                             |superblock_idx| hole_bitmap(superblock_idx,
                                                      hole1_offset,
                                                      hole1_size)
-                                                 & hole_bitmap(superblock_idx,
-                                                               hole2_offset,
-                                                               hole2_size);
+                                             & hole_bitmap(superblock_idx,
+                                                           hole2_offset,
+                                                           hole2_size);
                         test_build(requested_blocks,
                                    hole2_offset,
                                    hole2_size,
