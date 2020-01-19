@@ -422,10 +422,60 @@ mod tests {
         HoleSearch::new(1, std::iter::empty());
     }
 
-    // TODO: Retrying and ending iteration
+    #[test]
+    fn retry_single_hole() {
+        for &(num_superblocks, requested_blocks) in TEST_CONFIGURATIONS {
+            let num_blocks = num_superblocks * BLOCKS_PER_SUPERBLOCK;
+            'hole: for hole_size in [
+                requested_blocks,
+                requested_blocks+1,
+                requested_blocks+BLOCKS_PER_SUPERBLOCK,
+                num_blocks,
+            ].iter().copied() {
+                if hole_size > num_blocks { continue 'hole; }
+                for hole_offset in (0..=(num_blocks - hole_size)).step_by(15) {
+                    // TODO: Need to stop when the "left" part of the hole
+                    //       bigger than the "right" part.
+                    let hole_start_sb_idx = hole_offset / BLOCKS_PER_SUPERBLOCK;
+                    let hole_start_subidx = hole_offset % BLOCKS_PER_SUPERBLOCK;
+                    let hole_head_len = (BLOCKS_PER_SUPERBLOCK-hole_start_subidx).min(hole_size);
+                    let hole_head_end_subidx = hole_start_subidx + hole_start_subidx;
+                    for busy_start_subidx in (hole_start_subidx..hole_head_end_subidx).step_by(2) {
+                        for busy_len in (1..=(hole_head_end_subidx-busy_start_subidx)).step_by(2) {
+                            // TODO: Build, retry with hole_start_sb_idx, bitmap_oracle(hole_start_sb_idx) + SuperblockBitmap(busy_start_subidx, busy_len)
+                        }
+                    }
+
+                    let remaining_blocks = hole_size - hole_head_len;
+                    let body_superblocks = remaining_blocks / BLOCKS_PER_SUPERBLOCK;
+                    let body_start_sb_idx = hole_start_sb_idx + 1;
+                    let body_end_sb_idx = body_start_sb_idx + body_superblocks;
+                    for body_sb_idx in (body_start_sb_idx..body_end_sb_idx).step_by(2) {
+                        for busy_start_subidx in (0..BLOCKS_PER_SUPERBLOCK).step_by(8) {
+                            for busy_len in (1..=(BLOCKS_PER_SUPERBLOCK-busy_start_subidx)).step_by(4) {
+                                // TODO: Build, retry with hole_start_sb_idx, SuperblockBitmap(busy_start_subidx, busy_len)
+                            }
+                        }
+                    }
+
+                    let tail_blocks = remaining_blocks % BLOCKS_PER_SUPERBLOCK;
+                    for busy_start_subidx in (0..tail_blocks).step_by(2) {
+                        for busy_len in (1..=(tail_blocks-busy_start_subidx)).step_by(2) {
+                            // TODO: Build, retry with hole_start_sb_idx, bitmap_oracle(hole_start_sb_idx) + SuperblockBitmap(busy_start_subidx, busy_len)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // TODO: Test retries in a bitmap with two holes? Will be expensive...
 
     // Test HoleSearch construction on a bitmap with a single "main" hole,
     // possibly preceded by smaller ones that can't fulfill the user request.
+    //
+    // TODO: Generalize this to retries
+    //
     fn test_build(requested_blocks: usize,
                   main_hole_offset: usize,
                   main_hole_size: usize,
