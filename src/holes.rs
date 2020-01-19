@@ -309,67 +309,20 @@ mod tests {
     #[test]
     fn build_full() {
         for &(num_superblocks, requested_blocks) in TEST_CONFIGURATIONS {
-            let (hole_search, hole) =
-                HoleSearch::new(requested_blocks,
-                                std::iter::repeat(SuperblockBitmap::FULL)
-                                          .take(num_superblocks));
-
-            assert_eq!(hole, predict_search_result(requested_blocks, 0, 0));
-            assert_eq!(hole_search.requested_blocks, requested_blocks);
-            assert_eq!(hole_search.remaining_blocks,
-                       predict_remaining_blocks(requested_blocks,
-                                                0,
-                                                0,
-                                                num_superblocks));
-            assert_eq!(hole_search.current_superblock_idx,
-                       predict_current_superblock_idx(requested_blocks,
-                                                      0,
-                                                      0,
-                                                      num_superblocks));
-            assert_eq!(hole_search.current_bitmap,
-                       predict_current_bitmap(requested_blocks,
-                                              0,
-                                              0,
-                                              num_superblocks));
-            assert_eq!(hole_search.current_search_subidx,
-                       predict_current_search_subidx(requested_blocks, 0, 0));
-            check_superblock_iter(hole_search, num_superblocks);
+            test_build_with_hole(requested_blocks,
+                                 0,
+                                 0,
+                                 num_superblocks);
         }
     }
 
     #[test]
     fn build_empty() {
         for &(num_superblocks, requested_blocks) in TEST_CONFIGURATIONS {
-            let (hole_search, hole) =
-                HoleSearch::new(requested_blocks,
-                                std::iter::repeat(SuperblockBitmap::EMPTY)
-                                          .take(num_superblocks));
-
-            let hole_blocks = num_superblocks * BLOCKS_PER_SUPERBLOCK;
-            assert_eq!(hole, predict_search_result(requested_blocks,
-                                                   0,
-                                                   hole_blocks));
-            assert_eq!(hole_search.requested_blocks, requested_blocks);
-            assert_eq!(hole_search.remaining_blocks,
-                       predict_remaining_blocks(requested_blocks,
-                                                0,
-                                                hole_blocks,
-                                                num_superblocks));
-            assert_eq!(hole_search.current_superblock_idx,
-                       predict_current_superblock_idx(requested_blocks,
-                                                      0,
-                                                      hole_blocks,
-                                                      num_superblocks));
-            assert_eq!(hole_search.current_bitmap,
-                       predict_current_bitmap(requested_blocks,
-                                              0,
-                                              hole_blocks,
-                                              num_superblocks));
-            assert_eq!(hole_search.current_search_subidx,
-                       predict_current_search_subidx(requested_blocks,
-                                                     0,
-                                                     hole_blocks));
-            check_superblock_iter(hole_search, num_superblocks);
+            test_build_with_hole(requested_blocks,
+                                 0,
+                                 num_superblocks * BLOCKS_PER_SUPERBLOCK,
+                                 num_superblocks);
         }
     }
 
@@ -381,38 +334,54 @@ mod tests {
             if requested_blocks > num_superblocks { continue 'conf; }
             let num_blocks = num_superblocks * BLOCKS_PER_SUPERBLOCK;
             for hole_shift in 0..=(num_blocks - requested_blocks) {
-                // Start the hole search and validate its results
-                let (hole_search, hole) =
-                    HoleSearch::new(requested_blocks,
-                                    hole_iter(hole_shift, requested_blocks)
-                                        .take(num_superblocks));
-
-                assert_eq!(hole, predict_search_result(requested_blocks,
-                                                       hole_shift,
-                                                       requested_blocks));
-                assert_eq!(hole_search.requested_blocks, requested_blocks);
-                assert_eq!(hole_search.remaining_blocks,
-                           predict_remaining_blocks(requested_blocks,
-                                                    hole_shift,
-                                                    requested_blocks,
-                                                    num_superblocks));
-                assert_eq!(hole_search.current_superblock_idx,
-                           predict_current_superblock_idx(requested_blocks,
-                                                          hole_shift,
-                                                          requested_blocks,
-                                                          num_superblocks));
-                assert_eq!(hole_search.current_bitmap,
-                           predict_current_bitmap(requested_blocks,
-                                                  hole_shift,
-                                                  requested_blocks,
-                                                  num_superblocks));
-                assert_eq!(hole_search.current_search_subidx,
-                           predict_current_search_subidx(requested_blocks,
-                                                         hole_shift,
-                                                         requested_blocks));
-                check_superblock_iter(hole_search, num_superblocks);
+                test_build_with_hole(requested_blocks,
+                                     hole_shift,
+                                     requested_blocks,
+                                     num_superblocks);
             }
         }
+    }
+
+    fn test_build_with_hole(requested_blocks: usize,
+                            hole_offset: usize,
+                            hole_size: usize,
+                            num_superblocks: usize) {
+        // This is a recipe for a bitmap iterator with a "hole" of free memory
+        let make_bitmap_iter = || {
+            hole_iter(hole_offset, hole_size).take(num_superblocks)
+        };
+        // Test that the iterator behaves as expected
+        for (idx, bitmap) in make_bitmap_iter().enumerate() {
+            assert_eq!(bitmap, hole_bitmap(idx, hole_offset, hole_size));
+        }
+
+        // Try to search a hole in that bitmap and see how it goes
+        let (hole_search, hole) = HoleSearch::new(requested_blocks,
+                                                  make_bitmap_iter());
+        assert_eq!(hole, predict_search_result(requested_blocks,
+                                               hole_offset,
+                                               hole_size));
+        assert_eq!(hole_search.requested_blocks, requested_blocks);
+        assert_eq!(hole_search.remaining_blocks,
+                   predict_remaining_blocks(requested_blocks,
+                                            hole_offset,
+                                            hole_size,
+                                            num_superblocks));
+        assert_eq!(hole_search.current_superblock_idx,
+                   predict_current_superblock_idx(requested_blocks,
+                                                  hole_offset,
+                                                  hole_size,
+                                                  num_superblocks));
+        assert_eq!(hole_search.current_bitmap,
+                   predict_current_bitmap(requested_blocks,
+                                          hole_offset,
+                                          hole_size,
+                                          num_superblocks));
+        assert_eq!(hole_search.current_search_subidx,
+                   predict_current_search_subidx(requested_blocks,
+                                                 hole_offset,
+                                                 hole_size));
+        check_superblock_iter(hole_search, num_superblocks);
     }
 
     #[test]
@@ -421,7 +390,6 @@ mod tests {
         HoleSearch::new(1, std::iter::empty());
     }
 
-    // TODO: Tester hole_iter pour chaque configuration évaluée
     // TODO: Retrying and ending iteration
     // TODO: Tester avec des trous un peu trop petits et un peu trop grands
     // TODO: Tester avec une suite de deux trous (trop court -> OK)
