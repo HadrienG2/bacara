@@ -319,9 +319,15 @@ mod tests {
                                                 0,
                                                 0,
                                                 num_superblocks));
-            assert_eq!(hole_search.current_superblock_idx, num_superblocks);
+            assert_eq!(hole_search.current_superblock_idx,
+                       predict_current_superblock_idx(requested_blocks,
+                                                      0,
+                                                      0,
+                                                      num_superblocks));
+
             assert_eq!(hole_search.current_bitmap, SuperblockBitmap::FULL);
             assert_eq!(hole_search.current_search_subidx, 0);
+
             check_superblock_iter(hole_search, num_superblocks);
         }
     }
@@ -344,18 +350,11 @@ mod tests {
                                                 0,
                                                 hole_blocks,
                                                 num_superblocks));
-
-            let trailing_blocks =
-                if requested_blocks % BLOCKS_PER_SUPERBLOCK == 0 {
-                    BLOCKS_PER_SUPERBLOCK
-                } else {
-                    requested_blocks % BLOCKS_PER_SUPERBLOCK
-                };
-            let previous_superblocks =
-                (requested_blocks - trailing_blocks) / BLOCKS_PER_SUPERBLOCK;
-
             assert_eq!(hole_search.current_superblock_idx,
-                       previous_superblocks.min(num_superblocks));
+                       predict_current_superblock_idx(requested_blocks,
+                                                      0,
+                                                      hole_blocks,
+                                                      num_superblocks));
 
             assert_eq!(hole_search.current_bitmap, SuperblockBitmap::EMPTY);
 
@@ -388,9 +387,13 @@ mod tests {
                                                     hole_shift,
                                                     requested_blocks,
                                                     num_superblocks));
+                assert_eq!(hole_search.current_superblock_idx,
+                           predict_current_superblock_idx(requested_blocks,
+                                                          hole_shift,
+                                                          requested_blocks,
+                                                          num_superblocks));
 
                 // Convert the hole block-wise shift in superblocks+tail
-                let start_superblock_idx = hole_shift / BLOCKS_PER_SUPERBLOCK;
                 let start_subidx = (hole_shift % BLOCKS_PER_SUPERBLOCK) as u32;
 
                 // Compute number of free blocks in the first hole superblock
@@ -400,8 +403,6 @@ mod tests {
 
                 if first_blocks == requested_blocks {
                     // Hole fits in a single superblock
-                    assert_eq!(hole_search.current_superblock_idx,
-                               start_superblock_idx);
                     assert_eq!(hole_search.current_bitmap,
                                !SuperblockBitmap::new_mask(
                                    start_subidx,
@@ -410,9 +411,6 @@ mod tests {
                     assert_eq!(hole_search.current_search_subidx, start_subidx);
                 } else {
                     // Hole has a head/body/tail layout
-                    let body_start_idx =
-                        start_superblock_idx +
-                            (first_blocks != BLOCKS_PER_SUPERBLOCK) as usize;
                     let other_blocks = requested_blocks - first_blocks;
                     let trailing_blocks =
                         if other_blocks % BLOCKS_PER_SUPERBLOCK == 0 {
@@ -420,10 +418,6 @@ mod tests {
                         } else {
                             other_blocks % BLOCKS_PER_SUPERBLOCK
                         };
-                    let previous_superblocks =
-                        (other_blocks-trailing_blocks) / BLOCKS_PER_SUPERBLOCK;
-                    assert_eq!(hole_search.current_superblock_idx,
-                               body_start_idx + previous_superblocks);
                     assert_eq!(hole_search.current_bitmap,
                                SuperblockBitmap::new_tail_mask(
                                    trailing_blocks as u32
@@ -538,7 +532,7 @@ mod tests {
                                 hole_offset: usize,
                                 hole_size: usize,
                                 num_superblocks: usize) -> usize {
-        // The result is easiest to predict starting from search results
+        // This result is easiest to predict starting from search results
         match predict_search_result(requested_size,
                                     hole_offset,
                                     hole_size) {
@@ -570,6 +564,33 @@ mod tests {
                     // ...or else the last fully allocated body superblock
                     BLOCKS_PER_SUPERBLOCK
                 }
+            }
+        }
+    }
+
+    // Predict "current superblock" state on a bitmap with a single hole
+    fn predict_current_superblock_idx(requested_size: usize,
+                                      hole_offset: usize,
+                                      hole_size: usize,
+                                      num_superblocks: usize) -> usize {
+        // This result is easiest to predict starting from search results
+        match predict_search_result(requested_size,
+                                    hole_offset,
+                                    hole_size) {
+            // If search failed, the end of the bitmap was reached
+            None => num_superblocks,
+
+            // For single-superblock allocs, report allocation index
+            Some(Hole::SingleSuperblock { superblock_idx, .. }) => superblock_idx,
+
+            // For multi-superblock allocs, report tail or last body superblock
+            Some(Hole::MultipleSuperblocks { body_start_idx,
+                                             num_head_blocks }) => {
+                let non_head_blocks = requested_size - num_head_blocks as usize;
+                let body_superblocks = non_head_blocks / BLOCKS_PER_SUPERBLOCK;
+                let body_end_idx = body_start_idx + body_superblocks - 1;
+                let tail_blocks = non_head_blocks % BLOCKS_PER_SUPERBLOCK;
+                body_end_idx + (tail_blocks != 0) as usize
             }
         }
     }
