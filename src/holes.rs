@@ -307,37 +307,25 @@ mod tests {
     ];
 
     #[test]
-    fn build_full() {
+    fn build_single_hole() {
         for &(num_superblocks, requested_blocks) in TEST_CONFIGURATIONS {
-            test_build_with_hole(requested_blocks,
-                                 0,
-                                 0,
-                                 num_superblocks);
-        }
-    }
-
-    #[test]
-    fn build_empty() {
-        for &(num_superblocks, requested_blocks) in TEST_CONFIGURATIONS {
-            test_build_with_hole(requested_blocks,
-                                 0,
-                                 num_superblocks * BLOCKS_PER_SUPERBLOCK,
-                                 num_superblocks);
-        }
-    }
-
-    #[test]
-    fn build_exact() {
-        'conf: for &(num_superblocks, requested_blocks) in TEST_CONFIGURATIONS {
-            // We'll try to generate all possible holes of the right size. If
-            // none exist, we skip this configuration.
-            if requested_blocks > num_superblocks { continue 'conf; }
             let num_blocks = num_superblocks * BLOCKS_PER_SUPERBLOCK;
-            for hole_shift in 0..=(num_blocks - requested_blocks) {
-                test_build_with_hole(requested_blocks,
-                                     hole_shift,
-                                     requested_blocks,
-                                     num_superblocks);
+            'hole: for hole_size in [
+                0,
+                requested_blocks.saturating_sub(BLOCKS_PER_SUPERBLOCK),
+                requested_blocks.saturating_sub(1),
+                requested_blocks,
+                requested_blocks+1,
+                requested_blocks+BLOCKS_PER_SUPERBLOCK,
+                num_blocks
+            ].iter().copied() {
+                if hole_size > num_blocks { continue 'hole; }
+                for hole_offset in 0..=(num_blocks - hole_size) {
+                    test_build_with_hole(requested_blocks,
+                                         hole_offset,
+                                         hole_size,
+                                         num_superblocks);
+                }
             }
         }
     }
@@ -350,6 +338,7 @@ mod tests {
         let make_bitmap_iter = || {
             hole_iter(hole_offset, hole_size).take(num_superblocks)
         };
+
         // Test that the iterator behaves as expected
         for (idx, bitmap) in make_bitmap_iter().enumerate() {
             assert_eq!(bitmap, hole_bitmap(idx, hole_offset, hole_size));
@@ -391,7 +380,6 @@ mod tests {
     }
 
     // TODO: Retrying and ending iteration
-    // TODO: Tester avec des trous un peu trop petits et un peu trop grands
     // TODO: Tester avec une suite de deux trous (trop court -> OK)
 
     // Generate an infinite bitmap which is entirely allocated except for a hole
