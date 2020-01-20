@@ -1,11 +1,19 @@
-//! This crate provides a Concurrent Bitmap Allocator, which you can use for
-//! your dynamic memory allocation needs in those real-time threads where the
-//! system memory allocator should not be used.
+//! This crate provides a Bitmap Allocator for Concurrent Applications with
+//! Real-time Activities. You can use it for your dynamic memory allocation
+//! needs in those real-time threads where the system memory allocator should
+//! not be used because of its unpredictable execution time.
 //!
-//! The implementation is both thread-safe and real-time-friendly: after its
-//! RT-unsafe initialization stage, you can use this allocator to allocate and
-//! liberate memory from multiple RT threads, and none of them will acquire a
-//! lock or call into any RT-unsafe operating system facility in the process.
+//! The implementation is both thread-safe and real-time-safe: after
+//! construction (which is RT-unsafe), you can use this allocator to allocate
+//! and liberate memory from multiple RT threads, and none of them will acquire
+//! a lock or call into any operating system facility in the process.
+//!
+//! In terms of progress guarantee, we guarantee lock-freedom but not
+//! wait-freedom: no thread can prevent other threads from making progress by
+//! freezing or crashing at the wrong time, but a thread hammering the allocator
+//! in a tight loop can slow down other threads concurrently trying to allocate
+//! memory to an unpredictable degree. As long as you keep use of this allocator
+//! reasonably infrequent, this shouldn't be a problem in practice.
 //!
 //! # Bitmap allocation primer
 //!
