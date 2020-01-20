@@ -390,7 +390,7 @@ mod tests {
                 // Fight combinatorics by bounding first block offset to one SB
                 let hole1_offset_max =
                     (BLOCKS_PER_SUPERBLOCK).min(num_blocks - min_full_size);
-                for hole1_offset in (0..=hole1_offset_max).step_by(4) {
+                for hole1_offset in (0..=hole1_offset_max).step_by(3) {
                     // Second hole must come at least one block after, and again
                     // we must keep combinatorics in check.
                     let hole2_offset_min = hole1_offset + hole1_size + 1;
@@ -452,10 +452,10 @@ mod tests {
                 // We scan possible hole positions quickly, since we've already
                 // done exhaustive testing of building from a single hole of
                 // those sizes in build_single_hole...
-                for hole_offset in (0..=(num_blocks - hole_size)).step_by(24) {
+                for hole_offset in (0..=(num_blocks - hole_size)).step_by(31) {
                     // ...but this time we're going to add a used block
                     // somewhere in the hole after allocation as a "retry" test
-                    for used_offset in (0..requested_blocks).step_by(16) {
+                    for used_offset in (0..requested_blocks).step_by(23) {
                         // Compute global obstacle position
                         let used_pos = hole_offset + used_offset;
                         let used_superblock = used_pos / BLOCKS_PER_SUPERBLOCK;
