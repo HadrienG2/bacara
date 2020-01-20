@@ -387,15 +387,15 @@ mod tests {
                 let min_full_size = hole1_size + 1 + hole2_size;
                 if min_full_size > num_blocks { continue 'hole; }
 
-                // Fight combinatorics by bounding first block offset to one SB
+                // Fight combinatorics by bounding first block offset
                 let hole1_offset_max =
-                    (BLOCKS_PER_SUPERBLOCK).min(num_blocks - min_full_size);
-                for hole1_offset in (0..=hole1_offset_max).step_by(3) {
+                    (3*BLOCKS_PER_SUPERBLOCK).min(num_blocks - min_full_size);
+                for hole1_offset in (0..=hole1_offset_max).step_by(23) {
                     // Second hole must come at least one block after, and again
                     // we must keep combinatorics in check.
                     let hole2_offset_min = hole1_offset + hole1_size + 1;
                     let hole2_offset_max =
-                        (hole2_offset_min + BLOCKS_PER_SUPERBLOCK)
+                        (hole2_offset_min + 2*BLOCKS_PER_SUPERBLOCK)
                             .min(num_blocks - hole2_size);
                     for hole2_offset in hole2_offset_min..=hole2_offset_max {
                         // We don't test the iterator in this case, as we've
