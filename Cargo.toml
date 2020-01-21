@@ -10,3 +10,6 @@ genawaiter = "0.2"
 rand = "0.7"
 require_unsafe_in_body = "0.2"
 testbench = "0.7"
+
+[profile.test]
+opt-level = 1
