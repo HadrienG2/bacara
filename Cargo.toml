@@ -5,6 +5,9 @@ authors = ["Hadrien G. <knights_of_ni@gmx.com>"]
 edition = "2018"
 # TODO: Finish filling in more metadata
 
+[dependencies]
+region = "2.1"
+
 [dev-dependencies]
 genawaiter = "0.2"
 rand = "0.7"

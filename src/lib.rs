@@ -75,7 +75,7 @@ use require_unsafe_in_body::require_unsafe_in_bodies;
 
 use std::{
     alloc::{self, Layout},
-    mem::MaybeUninit,
+    mem::{self, MaybeUninit},
     ptr::NonNull,
     sync::atomic::{self, Ordering},
 };
@@ -93,7 +93,7 @@ pub(crate) use crate::bitmap::SuperblockBitmap;
 /// it's also internally exposed as a module-level const so that it's shorter
 /// and can be brought into scope with "use".
 pub(crate) const BLOCKS_PER_SUPERBLOCK: usize =
-    std::mem::size_of::<SuperblockBitmap>() * 8;
+    mem::size_of::<SuperblockBitmap>() * 8;
 
 
 /// A thread-safe bitmap allocator
@@ -130,6 +130,9 @@ pub struct Allocator {
     /// We must keep track of this because Rust's allocator API will expect us
     /// to give back this information upon deallocating the backing store.
     alignment: usize,
+
+    /// Truth that all memory allocations are locked into RAM
+    locked: bool,
 }
 
 // `require_unsafe_in_bodies` is only enabled on development builds because it
@@ -179,10 +182,53 @@ impl Allocator {
 
         // Build the usage-tracking bitmap
         let superblock_size = block_size * BLOCKS_PER_SUPERBLOCK;
-        let usage_bitmap = std::iter::repeat(SuperblockBitmap::EMPTY)
-                                     .map(AtomicSuperblockBitmap::new)
-                                     .take(capacity / superblock_size)
-                                     .collect::<Box<[_]>>();
+        let mut usage_bitmap = std::iter::repeat(SuperblockBitmap::EMPTY)
+                                         .map(AtomicSuperblockBitmap::new)
+                                         .take(capacity / superblock_size)
+                                         .collect::<Box<[_]>>();
+
+        // Try to force the underlying operating system to keep our memory
+        // allocations into RAM, instead of engaging in weird virtual memory
+        // tricks that can lead memory reads and writes to become RT-unsafe.
+        let backing_lock =
+            region::lock(backing_store_start.as_ptr() as *mut u8, capacity)
+                .map_err(|err| if cfg!(debug_assertions) {
+                    eprintln!("WARNING: Failed to lock backing store memory \
+                                        with error {:?}", err);
+                })
+                .ok();
+        let bitmap_size =
+            usage_bitmap.len() * mem::size_of::<SuperblockBitmap>();
+        let bitmap_lock =
+            region::lock(usage_bitmap.as_mut_ptr() as *mut u8, bitmap_size)
+                .map_err(|err| if cfg!(debug_assertions) {
+                    eprintln!("WARNING: Failed to lock usage bitmap memory \
+                                        with error {:?}", err);
+                })
+                .ok();
+
+        // If successful, acquire ownership of the memory locks, since the
+        // LockGuard model does not fit our allocation lifetimes nicely.
+        let locked =
+            if let (Some(guard1), Some(guard2)) = (backing_lock, bitmap_lock) {
+                // All memory was successfully locked, acquire lock ownership.
+                // This is safe because we're going to unlock the memory
+                // manually on Allocator::Drop.
+                unsafe {
+                    guard1.release();
+                    guard2.release();
+                }
+                true
+            } else {
+                // Some memory was not locked, let the locks drop themselves and
+                // print a warning in debug builds
+                if cfg!(debug_assertions) {
+                    eprintln!("WARNING: Failed to lock some owned memory, the \
+                                        operating system's virtual memory \
+                                        subsystem may break real-time code!");
+                }
+                false
+            };
 
         // Build and return the allocator struct
         Allocator {
@@ -190,6 +236,7 @@ impl Allocator {
             usage_bitmap,
             block_size_shift: block_size.trailing_zeros() as u8,
             alignment: block_align,
+            locked
         }
     }
 
@@ -650,6 +697,30 @@ impl Drop for Allocator {
             "Allocator was dropped while there were still live allocations"
         );
 
+        // If owned storage allocations were successfully locked, unlock them.
+        // This is safe because this code path will only be reached if memory
+        // was successfully locked in new_unchecked.
+        let backing_store_ptr = self.backing_store_start.cast::<u8>().as_ptr();
+        if self.locked {
+            let usage_bitmap_ptr = self.usage_bitmap.as_mut_ptr() as *mut u8;
+            let bitmap_size =
+                self.usage_bitmap.len() * mem::size_of::<SuperblockBitmap>();
+            unsafe {
+                region::unlock(backing_store_ptr, self.capacity())
+                    .map_err(|err| if cfg!(debug_assertions) {
+                        eprintln!("WARNING: Failed to unlock backing store \
+                                            memory with error {:?}", err);
+                    })
+                    .ok();
+                region::unlock(usage_bitmap_ptr, bitmap_size)
+                    .map_err(|err| if cfg!(debug_assertions) {
+                        eprintln!("WARNING: Failed to unlock usage bitmap
+                                            memory with error {:?}", err)
+                    })
+                    .ok();
+            }
+        }
+
         // Deallocate the backing store. This is safe because...
         // - An allocator is always created with a backing store allocation
         // - Only Drop, which happens at most once, can liberate that allocation
@@ -657,8 +728,7 @@ impl Drop for Allocator {
         let backing_store_layout =
             Layout::from_size_align(self.capacity(), self.alignment)
                    .expect("All Layout preconditions were checked by builder");
-        unsafe { alloc::dealloc(self.backing_store_start.cast::<u8>().as_ptr(),
-                                backing_store_layout); }
+        unsafe { alloc::dealloc(backing_store_ptr, backing_store_layout); }
     }
 }
 
