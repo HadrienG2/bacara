@@ -281,25 +281,13 @@ impl Allocator {
         self.usage_bitmap.len() * self.superblock_size()
     }
 
-    /// Safely allocate a memory buffer, with auto-liberation
-    ///
-    /// This is a safe interface on top of the raw memory allocation facility
-    /// provided by `alloc_unbound` and `dealloc_unbound`. It leverages the Rust
-    /// borrow checker to ensure at compile time that no allocated buffer will
-    /// outlive its Allocator parent.
-    ///
-    /// The price to pay for this higher-level interface is that allocated
-    /// buffer objects will be bigger, and that it's harder to store both an
-    /// `Allocator` and some buffers allocated from it within a single struct
-    /// because that would make it a self-referential struct.
+    // TODO: Add a safe `alloc_bound` API based on a Box-ish abstraction that
+    //       auto-deallocates and auto-derefs, guaranteed non-dangling by the
+    //       use of a lifetime-based API.
     //
-    // FIXME: Add a Box-ish abstraction that auto-deallocates and auto-derefs,
-    //        made safe by the use of a lifetime-based API.
-    //
-    // TODO: As alloc_unbound matures, adapt alloc_bound accordingly.
-    pub fn alloc_bound<'s>(&'s self, _size: usize) -> Option<&'s mut [MaybeUninit<u8>]> {
-        unimplemented!()
-    }
+    //       Warn that it has a performance cost (need a back-reference to the
+    //       home Allocator) and an ergonomics cost (hard to store allocator +
+    //       allocations together as that's a self-referential struct.
 
     /// Allocate a memory buffer, without borrow checking
     ///
