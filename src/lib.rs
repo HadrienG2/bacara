@@ -387,11 +387,19 @@ impl Allocator {
                 // All blocks are in a single superblock, no transaction needed
                 Hole::SingleSuperblock { superblock_idx,
                                          first_block_subidx } => {
-                    // ...so we just compute the mask and try to allocate
-                    let mask = SuperblockBitmap::new_mask(first_block_subidx,
-                                                          num_blocks as u32);
-                    match self.try_alloc_blocks(superblock_idx, mask)
-                    {
+                    // ...so we just try to allocate
+                    let alloc_result = if num_blocks == BLOCKS_PER_SUPERBLOCK {
+                        debug_assert_eq!(first_block_subidx, 0);
+                        self.try_alloc_superblock(superblock_idx)
+                    } else {
+                        let mask =
+                            SuperblockBitmap::new_mask(first_block_subidx,
+                                                       num_blocks as u32);
+                        self.try_alloc_blocks(superblock_idx, mask)
+                    };
+
+                    // Did we succeed?
+                    match alloc_result {
                         // We managed to allocate this hole
                         Ok(()) => {
                             let first_block_idx =
