@@ -185,7 +185,7 @@ impl Allocator {
         // Try to force the underlying operating system to keep our memory
         // allocations into RAM, instead of engaging in weird virtual memory
         // tricks that can lead memory reads and writes to become RT-unsafe.
-        let backing_lock = region::lock(backing_store_start.as_ptr() as *mut u8, capacity)
+        let backing_lock = region::lock(backing_store_start.as_ptr().cast::<u8>(), capacity)
             .map_err(|err| {
                 if cfg!(debug_assertions) {
                     eprintln!(
@@ -196,7 +196,7 @@ impl Allocator {
             })
             .ok();
         let bitmap_size = usage_bitmap.len() * mem::size_of::<SuperblockBitmap>();
-        let bitmap_lock = region::lock(usage_bitmap.as_mut_ptr() as *mut u8, bitmap_size)
+        let bitmap_lock = region::lock(usage_bitmap.as_mut_ptr().cast::<u8>(), bitmap_size)
             .map_err(|err| {
                 if cfg!(debug_assertions) {
                     eprintln!(
@@ -720,7 +720,7 @@ impl Drop for Allocator {
         // was successfully locked in new_unchecked.
         let backing_store_ptr = self.backing_store_start.cast::<u8>().as_ptr();
         if self.locked {
-            let usage_bitmap_ptr = self.usage_bitmap.as_mut_ptr() as *mut u8;
+            let usage_bitmap_ptr = self.usage_bitmap.as_mut_ptr().cast::<u8>();
             let bitmap_size = self.usage_bitmap.len() * mem::size_of::<SuperblockBitmap>();
             unsafe {
                 region::unlock(backing_store_ptr, self.capacity())
