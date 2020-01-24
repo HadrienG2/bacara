@@ -572,6 +572,7 @@ impl Allocator {
         hole: Hole,
         num_blocks: usize
     ) -> Result<usize, (usize, SuperblockBitmap)> {
+        // TODO: Add some debug_asserts in there
         match hole {
             // All blocks are in a single superblock, no transaction needed
             Hole::SingleSuperblock { superblock_idx,
