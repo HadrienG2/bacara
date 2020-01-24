@@ -68,30 +68,30 @@ impl SuperblockBitmap {
     }
 
     /// Truth that allocation bitmap is empty (fully unallocated)
-    pub fn is_empty(&self) -> bool {
-        *self == Self::EMPTY
+    pub fn is_empty(self) -> bool {
+        self == Self::EMPTY
     }
 
     /// Truth that allocation bitmap is fully allocated
-    pub fn is_full(&self) -> bool {
-        *self == Self::FULL
+    pub fn is_full(self) -> bool {
+        self == Self::FULL
     }
 
     /// Truth that allocation bitmap is a mask (contiguous allocation)
-    pub fn is_mask(&self) -> bool {
+    pub fn is_mask(self) -> bool {
         // NOTE: Usually equal for masks, but 2x smaller in the case of EMPTY.
         self.0.count_zeros() <= self.0.leading_zeros() + self.0.trailing_zeros()
     }
 
     /// Number of free blocks which could be used for a "head" block sequence,
     /// which must end at the end of the superblock
-    pub fn free_blocks_at_end(&self) -> u32 {
+    pub fn free_blocks_at_end(self) -> u32 {
         self.0.leading_zeros()
     }
 
     /// Number of free blocks which could be used for a "tail" block sequence,
     /// which must start at the start of the superblock
-    pub fn free_blocks_at_start(&self) -> u32 {
+    pub fn free_blocks_at_start(self) -> u32 {
         self.0.trailing_zeros()
     }
 
@@ -105,7 +105,7 @@ impl SuperblockBitmap {
     // TODO: Reconsider accepting usize num_blocks, since search will always
     //       fail anyhow.
     pub fn search_free_blocks(
-        &self,
+        self,
         start_idx: u32,
         num_blocks: usize
     ) -> Result<u32, u32> {
@@ -163,6 +163,7 @@ impl std::fmt::Debug for SuperblockBitmap {
 impl Add for SuperblockBitmap {
     type Output = Self;
 
+    #[allow(clippy::suspicious_arithmetic_impl)]
     fn add(self, rhs: Self) -> Self {
         self | rhs
     }

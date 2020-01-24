@@ -143,6 +143,7 @@ impl Allocator {
     ///
     /// See the `Builder` documentation for more details on the subsequent
     /// allocator configuration process.
+    #[allow(clippy::new_ret_no_self)]
     pub const fn new() -> Builder {
         Builder::new()
     }
@@ -696,6 +697,7 @@ impl Allocator {
 }
 
 impl Drop for Allocator {
+    #[allow(clippy::debug_assert_with_mut_call)]
     fn drop(&mut self) {
         // Make sure that no storage blocks were allocated, as the corresponding
         // pointers will become dangling when the allocator is dropped.
