@@ -363,20 +363,19 @@ impl Allocator {
         //       halves that join between the end of the second half and the
         //       beginning of the first half, and the complexity must be
         //       justified by some proven substantial perf benefit.
-        let (mut hole_search, hole_opt) = HoleSearch::new(
+        let (mut hole_search, mut hole) = HoleSearch::new(
             num_blocks,
             self.usage_bitmap.iter()
                              .map(|asb| asb.load(Ordering::Relaxed))
         );
-        let mut hole = hole_opt?;
 
         // Try to allocate the current hole, retry on failure.
         let first_block_idx = loop {
-            match self.try_alloc_hole(hole, num_blocks) {
+            match self.try_alloc_hole(hole?, num_blocks) {
                 Ok(first_block_idx) => break first_block_idx,
 
                 Err((superblock_idx, observed_bitmap)) => {
-                    hole = hole_search.retry(superblock_idx, observed_bitmap)?;
+                    hole = hole_search.retry(superblock_idx, observed_bitmap);
                     continue;
                 }
             }
