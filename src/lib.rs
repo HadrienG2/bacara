@@ -82,7 +82,7 @@ use std::{
 
 
 // Re-export allocator builder at the crate root
-pub use builder::Builder;
+pub use builder::Builder as AllocatorBuilder;
 
 // Re-export superblock bitmap struct for other modules' use
 pub(crate) use crate::bitmap::SuperblockBitmap;
@@ -143,9 +143,8 @@ impl Allocator {
     ///
     /// See the `Builder` documentation for more details on the subsequent
     /// allocator configuration process.
-    #[allow(clippy::new_ret_no_self)]
-    pub const fn new() -> Builder {
-        Builder::new()
+    pub const fn builder() -> AllocatorBuilder {
+        AllocatorBuilder::new()
     }
 
     /// Allocator constructor proper, without invariant checking
@@ -696,6 +695,8 @@ impl Allocator {
 }
 
 impl Drop for Allocator {
+    // I disagree with clippy here because I do not use
+    // `AtomicSuperblock::get_mut` to write data, but only to read it.
     #[allow(clippy::debug_assert_with_mut_call)]
     fn drop(&mut self) {
         // Make sure that no storage blocks were allocated, as the corresponding

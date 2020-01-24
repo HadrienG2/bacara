@@ -163,6 +163,8 @@ impl std::fmt::Debug for SuperblockBitmap {
 impl Add for SuperblockBitmap {
     type Output = Self;
 
+    // I disagree with clippy here because set union is a sum from a math point
+    // of view, even if it's implemented via bitwise OR in this case.
     #[allow(clippy::suspicious_arithmetic_impl)]
     fn add(self, rhs: Self) -> Self {
         self | rhs
