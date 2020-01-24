@@ -567,7 +567,7 @@ impl Allocator {
     /// This operation has `Relaxed` memory ordering and must be followed by an
     /// `Acquire` memory barrier in order to avoid allocation being reordered
     /// after usage of the memory block by the compiler or CPU.
-    pub(crate) fn try_alloc_hole(
+    fn try_alloc_hole(
         &self,
         hole: Hole,
         num_blocks: usize
