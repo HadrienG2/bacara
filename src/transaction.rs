@@ -1,8 +1,7 @@
 //! RAII mechanism to automatically rollback partially committed allocations
 //! if subsequent steps of the allocation process fail.
 
-use crate::{Allocator, BLOCKS_PER_SUPERBLOCK, SuperblockBitmap};
-
+use crate::{Allocator, SuperblockBitmap, BLOCKS_PER_SUPERBLOCK};
 
 /// RAII guard to automatically rollback failed allocations
 ///
@@ -56,11 +55,10 @@ impl<'allocator> AllocTransaction<'allocator> {
     pub fn with_body(
         allocator: &'allocator Allocator,
         body_start_idx: usize,
-        num_body_superblocks: usize
+        num_body_superblocks: usize,
     ) -> Result<Self, (usize, SuperblockBitmap)> {
         // Check that the request makes sense
-        let superblock_capacity =
-            allocator.capacity() / allocator.superblock_size();
+        let superblock_capacity = allocator.capacity() / allocator.superblock_size();
         debug_assert!(
             body_start_idx < superblock_capacity,
             "Requested body starts after end of allocator backing store"
@@ -87,8 +85,9 @@ impl<'allocator> AllocTransaction<'allocator> {
             // Try to allocate the current superblock. If that fails, return the
             // index of the superblock that caused the failure. Any previous
             // allocation will be rolled back because "transaction" is dropped.
-            allocator.try_alloc_superblock(superblock_idx)
-                     .map_err(|actual_bitmap| (superblock_idx, actual_bitmap))?;
+            allocator
+                .try_alloc_superblock(superblock_idx)
+                .map_err(|actual_bitmap| (superblock_idx, actual_bitmap))?;
 
             // Update the transaction after every allocation
             transaction.num_body_superblocks += 1;
@@ -108,20 +107,25 @@ impl<'allocator> AllocTransaction<'allocator> {
         self.debug_check_invariants();
 
         // Check that there's room for a head allocation
-        debug_assert_ne!(self.body_start_idx, 0,
-                         "No superblock available for head allocation");
-        debug_assert_eq!(self.num_head_blocks, 0,
-                         "Head allocation may only be performed once");
+        debug_assert_ne!(
+            self.body_start_idx, 0,
+            "No superblock available for head allocation"
+        );
+        debug_assert_eq!(
+            self.num_head_blocks, 0,
+            "Head allocation may only be performed once"
+        );
 
         // Reject nonsensical empty head allocations
-        debug_assert_ne!(num_blocks, 0,
-                         "Requested an empty head allocation");
+        debug_assert_ne!(num_blocks, 0, "Requested an empty head allocation");
 
         // Try to allocate, and on failure return how many head blocks are
         // actually available (trailing zeros in the head superblock)
         self.allocator
-            .try_alloc_blocks(self.body_start_idx - 1,
-                              SuperblockBitmap::new_head_mask(num_blocks))
+            .try_alloc_blocks(
+                self.body_start_idx - 1,
+                SuperblockBitmap::new_head_mask(num_blocks),
+            )
             .map_err(|actual_bitmap| actual_bitmap.free_blocks_at_end())?;
 
         // On success, add the head blocks to the transaction
@@ -144,10 +148,11 @@ impl<'allocator> AllocTransaction<'allocator> {
         self.debug_check_invariants();
 
         // Check that there's room for an extra superblock
-        let num_body_superblocks =
-            self.allocator.capacity() / self.allocator.superblock_size();
-        debug_assert!(self.body_end_idx() < num_body_superblocks,
-                      "No superblock available for body extension");
+        let num_body_superblocks = self.allocator.capacity() / self.allocator.superblock_size();
+        debug_assert!(
+            self.body_end_idx() < num_body_superblocks,
+            "No superblock available for body extension"
+        );
 
         // Try to allocate, and on failure return actual bit pattern
         self.allocator.try_alloc_superblock(self.body_end_idx())?;
@@ -161,28 +166,30 @@ impl<'allocator> AllocTransaction<'allocator> {
     ///
     /// On failure, will return the bit pattern that was actually observed on
     /// the last body superblock.
-    pub fn try_alloc_tail(&mut self,
-                          num_blocks: u32) -> Result<(), SuperblockBitmap> {
+    pub fn try_alloc_tail(&mut self, num_blocks: u32) -> Result<(), SuperblockBitmap> {
         // Check transaction object consistency
         self.debug_check_invariants();
 
         // Check that there's room for a tail allocation
-        let num_body_superblocks =
-            self.allocator.capacity() / self.allocator.superblock_size();
-        debug_assert!(self.body_end_idx() < num_body_superblocks,
-                      "No superblock available for tail allocation");
-        debug_assert_eq!(self.num_tail_blocks, 0,
-                         "Tail allocation may only be performed once");
+        let num_body_superblocks = self.allocator.capacity() / self.allocator.superblock_size();
+        debug_assert!(
+            self.body_end_idx() < num_body_superblocks,
+            "No superblock available for tail allocation"
+        );
+        debug_assert_eq!(
+            self.num_tail_blocks, 0,
+            "Tail allocation may only be performed once"
+        );
 
         // Reject nonsensical empty tail allocations
-        debug_assert_ne!(num_blocks, 0,
-                         "Requested an empty tail allocation");
+        debug_assert_ne!(num_blocks, 0, "Requested an empty tail allocation");
 
         // Try to allocate, and on failure return how many tail blocks are
         // actually available (leading zeros in the tail superblock)
-        self.allocator
-            .try_alloc_blocks(self.body_end_idx(),
-                              SuperblockBitmap::new_tail_mask(num_blocks))?;
+        self.allocator.try_alloc_blocks(
+            self.body_end_idx(),
+            SuperblockBitmap::new_tail_mask(num_blocks),
+        )?;
 
         // On success, add the tail blocks to the transaction
         self.num_tail_blocks = num_blocks;
@@ -207,8 +214,7 @@ impl<'allocator> AllocTransaction<'allocator> {
 
         // Find the index of the first "one" in the allocation mask
         let first_block_idx =
-            self.body_start_idx * BLOCKS_PER_SUPERBLOCK
-                - (self.num_head_blocks as usize);
+            self.body_start_idx * BLOCKS_PER_SUPERBLOCK - (self.num_head_blocks as usize);
 
         // Forget the transaction object so that transaction is not canceled
         std::mem::forget(self);
@@ -221,17 +227,19 @@ impl<'allocator> AllocTransaction<'allocator> {
     fn debug_check_invariants(&self) {
         // If the transaction has head blocks...
         if self.num_head_blocks != 0 {
-            debug_assert_ne!(self.body_start_idx, 0,
-                             "Head superblock has an out-of-bounds index");
-            debug_assert_ne!(self.num_head_blocks,
-                             BLOCKS_PER_SUPERBLOCK as u32,
-                             "Head superblock is fully allocated, should be \
-                              marked as a body superblock instead");
+            debug_assert_ne!(
+                self.body_start_idx, 0,
+                "Head superblock has an out-of-bounds index"
+            );
+            debug_assert_ne!(
+                self.num_head_blocks, BLOCKS_PER_SUPERBLOCK as u32,
+                "Head superblock is fully allocated, should be \
+                 marked as a body superblock instead"
+            );
         }
 
         // Check that the body superblocks span a valid index range
-        let superblock_capacity =
-            self.allocator.capacity() / self.allocator.superblock_size();
+        let superblock_capacity = self.allocator.capacity() / self.allocator.superblock_size();
         debug_assert!(
             self.body_start_idx < superblock_capacity,
             "Body starts after end of allocator backing store"
@@ -245,12 +253,16 @@ impl<'allocator> AllocTransaction<'allocator> {
         if self.num_tail_blocks != 0 {
             // All tail blocks must verify some properties
             let body_end_idx = self.body_start_idx + self.num_body_superblocks;
-            debug_assert_ne!(body_end_idx, superblock_capacity - 1,
-                             "Tail superblock has an out-of-bounds index");
-            debug_assert_ne!(self.num_tail_blocks,
-                             BLOCKS_PER_SUPERBLOCK as u32,
-                             "Tail superblock is fully allocated, should be \
-                              marked as a body superblock instead");
+            debug_assert_ne!(
+                body_end_idx,
+                superblock_capacity - 1,
+                "Tail superblock has an out-of-bounds index"
+            );
+            debug_assert_ne!(
+                self.num_tail_blocks, BLOCKS_PER_SUPERBLOCK as u32,
+                "Tail superblock is fully allocated, should be \
+                 marked as a body superblock instead"
+            );
         }
     }
 }
@@ -264,7 +276,7 @@ impl Drop for AllocTransaction<'_> {
         if self.num_head_blocks != 0 {
             self.allocator.dealloc_blocks(
                 self.body_start_idx - 1,
-                SuperblockBitmap::new_head_mask(self.num_head_blocks)
+                SuperblockBitmap::new_head_mask(self.num_head_blocks),
             );
         }
 
@@ -278,7 +290,7 @@ impl Drop for AllocTransaction<'_> {
         if self.num_tail_blocks != 0 {
             self.allocator.dealloc_blocks(
                 body_end_idx,
-                SuperblockBitmap::new_tail_mask(self.num_tail_blocks)
+                SuperblockBitmap::new_tail_mask(self.num_tail_blocks),
             );
         }
     }

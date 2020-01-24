@@ -26,7 +26,7 @@
 //! and tracking which blocks are in use using an array of bits, a **bitmap**.
 //!
 //! Allocation is done by scanning the bitmap for a suitably large hole
-//! (continuous sequence of zeroes), filling that hole with ones, and mapping 
+//! (continuous sequence of zeroes), filling that hole with ones, and mapping
 //! the hole's index in the bitmap into a pointer within the backing store.
 //! Deallocation is done by mapping back from the user-provided pointer to a
 //! range of indices within the bitmap and resetting those bits to zero.
@@ -80,7 +80,6 @@ use std::{
     sync::atomic::{self, Ordering},
 };
 
-
 // Re-export allocator builder at the crate root
 pub use builder::Builder as AllocatorBuilder;
 
@@ -92,9 +91,7 @@ pub(crate) use crate::bitmap::SuperblockBitmap;
 /// This is what's publicly exposed as Allocator::BLOCKS_PER_SUPERBLOCK, but
 /// it's also internally exposed as a module-level const so that it's shorter
 /// and can be brought into scope with "use".
-pub(crate) const BLOCKS_PER_SUPERBLOCK: usize =
-    mem::size_of::<SuperblockBitmap>() * 8;
-
+pub(crate) const BLOCKS_PER_SUPERBLOCK: usize = mem::size_of::<SuperblockBitmap>() * 8;
 
 /// A thread-safe bitmap allocator
 #[derive(Debug)]
@@ -161,74 +158,77 @@ impl Allocator {
     /// corresponding `Builder` struct members' documentation, either in this
     /// constructor or other methods of Allocator.
     #[cfg_attr(not(test), allow(unused_unsafe))]
-    pub(crate) unsafe fn new_unchecked(block_align: usize,
-                                       block_size: usize,
-                                       capacity: usize) -> Self {
+    pub(crate) unsafe fn new_unchecked(
+        block_align: usize,
+        block_size: usize,
+        capacity: usize,
+    ) -> Self {
         // Allocate the backing store
         //
         // This is safe because we've checked all preconditions of `Layout`
         // and `alloc()` during the `Builder` construction process, including
         // the fact that capacity is not zero which is the one thing that makes
         // `alloc::alloc()` unsafe.
-        let backing_store_layout =
-            Layout::from_size_align(capacity, block_align)
-                   .expect("All Layout preconditions should have been checked");
-        let backing_store_start =
-            NonNull::new(unsafe { alloc::alloc(backing_store_layout) })
-                    .unwrap_or_else(|| {
-                        alloc::handle_alloc_error(backing_store_layout)
-                    })
-                    .cast::<MaybeUninit<u8>>();
+        let backing_store_layout = Layout::from_size_align(capacity, block_align)
+            .expect("All Layout preconditions should have been checked");
+        let backing_store_start = NonNull::new(unsafe { alloc::alloc(backing_store_layout) })
+            .unwrap_or_else(|| alloc::handle_alloc_error(backing_store_layout))
+            .cast::<MaybeUninit<u8>>();
 
         // Build the usage-tracking bitmap
         let superblock_size = block_size * BLOCKS_PER_SUPERBLOCK;
         let mut usage_bitmap = std::iter::repeat(SuperblockBitmap::EMPTY)
-                                         .map(AtomicSuperblockBitmap::new)
-                                         .take(capacity / superblock_size)
-                                         .collect::<Box<[_]>>();
+            .map(AtomicSuperblockBitmap::new)
+            .take(capacity / superblock_size)
+            .collect::<Box<[_]>>();
 
         // Try to force the underlying operating system to keep our memory
         // allocations into RAM, instead of engaging in weird virtual memory
         // tricks that can lead memory reads and writes to become RT-unsafe.
-        let backing_lock =
-            region::lock(backing_store_start.as_ptr() as *mut u8, capacity)
-                .map_err(|err| if cfg!(debug_assertions) {
-                    eprintln!("WARNING: Failed to lock backing store memory \
-                                        with error {:?}", err);
-                })
-                .ok();
-        let bitmap_size =
-            usage_bitmap.len() * mem::size_of::<SuperblockBitmap>();
-        let bitmap_lock =
-            region::lock(usage_bitmap.as_mut_ptr() as *mut u8, bitmap_size)
-                .map_err(|err| if cfg!(debug_assertions) {
-                    eprintln!("WARNING: Failed to lock usage bitmap memory \
-                                        with error {:?}", err);
-                })
-                .ok();
+        let backing_lock = region::lock(backing_store_start.as_ptr() as *mut u8, capacity)
+            .map_err(|err| {
+                if cfg!(debug_assertions) {
+                    eprintln!(
+                        "WARNING: Failed to lock backing store memory with error {:?}",
+                        err
+                    );
+                }
+            })
+            .ok();
+        let bitmap_size = usage_bitmap.len() * mem::size_of::<SuperblockBitmap>();
+        let bitmap_lock = region::lock(usage_bitmap.as_mut_ptr() as *mut u8, bitmap_size)
+            .map_err(|err| {
+                if cfg!(debug_assertions) {
+                    eprintln!(
+                        "WARNING: Failed to lock usage bitmap memory with error {:?}",
+                        err
+                    );
+                }
+            })
+            .ok();
 
         // If successful, acquire ownership of the memory locks, since the
         // LockGuard model does not fit our allocation lifetimes nicely.
-        let locked =
-            if let (Some(guard1), Some(guard2)) = (backing_lock, bitmap_lock) {
-                // All memory was successfully locked, acquire lock ownership.
-                // This is safe because we're going to unlock the memory
-                // manually on Allocator::Drop.
-                unsafe {
-                    guard1.release();
-                    guard2.release();
-                }
-                true
-            } else {
-                // Some memory was not locked, let the locks drop themselves and
-                // print a warning in debug builds
-                if cfg!(debug_assertions) {
-                    eprintln!("WARNING: Failed to lock some owned memory, the \
-                                        operating system's virtual memory \
-                                        subsystem may break real-time code!");
-                }
-                false
-            };
+        let locked = if let (Some(guard1), Some(guard2)) = (backing_lock, bitmap_lock) {
+            // All memory was successfully locked, acquire lock ownership.
+            // This is safe because we're going to unlock the memory
+            // manually on Allocator::Drop.
+            unsafe {
+                guard1.release();
+                guard2.release();
+            }
+            true
+        } else {
+            // Some memory was not locked, let the locks drop themselves and
+            // print a warning in debug builds
+            if cfg!(debug_assertions) {
+                eprintln!(
+                    "WARNING: Failed to lock some owned memory, the operating system's virtual \
+                     memory subsystem may break real-time code!"
+                );
+            }
+            false
+        };
 
         // Build and return the allocator struct
         Allocator {
@@ -236,7 +236,7 @@ impl Allocator {
             usage_bitmap,
             block_size_shift: block_size.trailing_zeros() as u8,
             alignment: block_align,
-            locked
+            locked,
         }
     }
 
@@ -308,8 +308,10 @@ impl Allocator {
     //       None when the requested alignment is higher than self.alignment.
     pub fn alloc_unbound(&self, size: usize) -> Option<NonNull<[MaybeUninit<u8>]>> {
         // Detect and report unrealistic requests in debug builds
-        debug_assert!(size < self.capacity(),
-                      "Requested size is above allocator capacity");
+        debug_assert!(
+            size < self.capacity(),
+            "Requested size is above allocator capacity"
+        );
 
         // Handle the zero-sized edge case
         //
@@ -322,10 +324,8 @@ impl Allocator {
                 // - Lifetimes don't matter as we're building a raw pointer
                 // - We won't overflow isize with a zero-length slice
                 // - &mut aliasing is not an issue for zero-sized slices.
-                unsafe { std::slice::from_raw_parts_mut(
-                    self.backing_store_start.as_ptr(),
-                    0
-                ) }.into()
+                unsafe { std::slice::from_raw_parts_mut(self.backing_store_start.as_ptr(), 0) }
+                    .into(),
             );
         }
 
@@ -364,8 +364,9 @@ impl Allocator {
         //       justified by some proven substantial perf benefit.
         let (mut hole_search, mut hole) = HoleSearch::new(
             num_blocks,
-            self.usage_bitmap.iter()
-                             .map(|asb| asb.load(Ordering::Relaxed))
+            self.usage_bitmap
+                .iter()
+                .map(|asb| asb.load(Ordering::Relaxed)),
         );
 
         // Try to allocate the current hole, retry on failure.
@@ -417,9 +418,7 @@ impl Allocator {
         // - There is no alignment problem as we're building a NonNull<u8>
         // - "size" cannot overflow isize because the backing store capacity is
         //   not allowed to do so.
-        let target_slice = unsafe {
-            std::slice::from_raw_parts_mut(target_start, size)
-        };
+        let target_slice = unsafe { std::slice::from_raw_parts_mut(target_start, size) };
 
         // Finally, we can build and return the output pointer
         NonNull::new(target_slice as *mut _)
@@ -444,25 +443,36 @@ impl Allocator {
         // backing store, with all the properties that one would expect.
         let ptr_start = ptr.cast::<MaybeUninit<u8>>().as_ptr();
         let store_start = self.backing_store_start.as_ptr();
-        debug_assert!(ptr_start >= store_start,
-                      "Deallocated ptr starts before backing store");
+        debug_assert!(
+            ptr_start >= store_start,
+            "Deallocated ptr starts before backing store"
+        );
         let ptr_offset = (ptr_start as usize) - (store_start as usize);
-        debug_assert!(ptr_offset < self.capacity(),
-                      "Deallocated ptr starts after backing store");
-        debug_assert_eq!(ptr_offset % self.block_size(), 0,
-                         "Deallocated ptr doesn't start on a block boundary");
+        debug_assert!(
+            ptr_offset < self.capacity(),
+            "Deallocated ptr starts after backing store"
+        );
+        debug_assert_eq!(
+            ptr_offset % self.block_size(),
+            0,
+            "Deallocated ptr doesn't start on a block boundary"
+        );
 
         // Check pointer length as well. This is safe because we requested a
         // valid pointer as part of this function's safety preconditions.
         let ptr_len = unsafe { ptr.as_ref() }.len();
-        debug_assert!(ptr_len < self.capacity() - ptr_offset,
-                      "Deallocated ptr overflows backing store");
+        debug_assert!(
+            ptr_len < self.capacity() - ptr_offset,
+            "Deallocated ptr overflows backing store"
+        );
         // NOTE: ptr_len may not be a multiple of the block size because we
         //       allow users to under-allocate blocks
 
         // Do not do anything beyond that for zero-sized allocations, by
         // definition they have no associated storage block to be freed
-        if ptr_len == 0 { return; }
+        if ptr_len == 0 {
+            return;
+        }
 
         // Make sure that the subsequent writes to the allocation bitmap are
         // ordered after any previous access to the buffer by the current
@@ -472,8 +482,7 @@ impl Allocator {
 
         // Switch to block coordinates as that's what our bitmap speaks
         let mut block_idx = ptr_offset / self.block_size();
-        let end_block_idx = block_idx + div_round_up(ptr_len,
-                                                     self.block_size());
+        let end_block_idx = block_idx + div_round_up(ptr_len, self.block_size());
 
         // Does our first block fall in the middle of a superblock?
         let local_start_idx = (block_idx % BLOCKS_PER_SUPERBLOCK) as u32;
@@ -483,19 +492,20 @@ impl Allocator {
 
             // Compute how many blocks are allocated within the superblock,
             // bearing in mind that the buffer may end there
-            let local_len =
-                (BLOCKS_PER_SUPERBLOCK - local_start_idx as usize)
-                    .min(end_block_idx - block_idx) as u32;
+            let local_len = (BLOCKS_PER_SUPERBLOCK - local_start_idx as usize)
+                .min(end_block_idx - block_idx) as u32;
 
             // Deallocate leading buffer blocks in this first superblock
             self.dealloc_blocks(
                 superblock_idx,
-                SuperblockBitmap::new_mask(local_start_idx, local_len)
+                SuperblockBitmap::new_mask(local_start_idx, local_len),
             );
 
             // Advance block pointer, stop if all blocks were liberated
             block_idx += local_len as usize;
-            if block_idx == end_block_idx { return; }
+            if block_idx == end_block_idx {
+                return;
+            }
         }
 
         // If control reached this point, block_idx is now at the start of a
@@ -509,12 +519,16 @@ impl Allocator {
 
         // Advance block pointer, stop if all blocks were liberated
         block_idx = end_superblock_idx * BLOCKS_PER_SUPERBLOCK;
-        if block_idx == end_block_idx { return; }
+        if block_idx == end_block_idx {
+            return;
+        }
 
         // Deallocate trailing buffer blocks in the last superblock
         let remaining_len = (end_block_idx - block_idx) as u32;
-        self.dealloc_blocks(end_superblock_idx,
-                            SuperblockBitmap::new_tail_mask(remaining_len));
+        self.dealloc_blocks(
+            end_superblock_idx,
+            SuperblockBitmap::new_tail_mask(remaining_len),
+        );
     }
 
     /// Try to atomically allocate a full superblock
@@ -526,12 +540,13 @@ impl Allocator {
     /// after usage of the memory block by the compiler or CPU.
     pub(crate) fn try_alloc_superblock(
         &self,
-        superblock_idx: usize
+        superblock_idx: usize,
     ) -> Result<(), SuperblockBitmap> {
-        debug_assert!(superblock_idx < self.usage_bitmap.len(),
-                      "Superblock index is out of bitmap range");
-        self.usage_bitmap[superblock_idx]
-            .try_alloc_all(Ordering::Relaxed, Ordering::Relaxed)
+        debug_assert!(
+            superblock_idx < self.usage_bitmap.len(),
+            "Superblock index is out of bitmap range"
+        );
+        self.usage_bitmap[superblock_idx].try_alloc_all(Ordering::Relaxed, Ordering::Relaxed)
     }
 
     /// Try to atomically allocate a subset of the blocks within a superblock
@@ -544,13 +559,13 @@ impl Allocator {
     pub(crate) fn try_alloc_blocks(
         &self,
         superblock_idx: usize,
-        mask: SuperblockBitmap
+        mask: SuperblockBitmap,
     ) -> Result<(), SuperblockBitmap> {
-        debug_assert!(superblock_idx < self.usage_bitmap.len(),
-                      "Superblock index is out of bitmap range");
-        self.usage_bitmap[superblock_idx].try_alloc_mask(mask,
-                                                         Ordering::Relaxed,
-                                                         Ordering::Relaxed)
+        debug_assert!(
+            superblock_idx < self.usage_bitmap.len(),
+            "Superblock index is out of bitmap range"
+        );
+        self.usage_bitmap[superblock_idx].try_alloc_mask(mask, Ordering::Relaxed, Ordering::Relaxed)
     }
 
     /// Try to allocate from memory found by a HoleSearch
@@ -570,21 +585,21 @@ impl Allocator {
     fn try_alloc_hole(
         &self,
         hole: Hole,
-        num_blocks: usize
+        num_blocks: usize,
     ) -> Result<usize, (usize, SuperblockBitmap)> {
         // TODO: Add some debug_asserts in there
         match hole {
             // All blocks are in a single superblock, no transaction needed
-            Hole::SingleSuperblock { superblock_idx,
-                                     first_block_subidx } => {
+            Hole::SingleSuperblock {
+                superblock_idx,
+                first_block_subidx,
+            } => {
                 // ...so we just try to allocate
                 let alloc_result = if num_blocks == BLOCKS_PER_SUPERBLOCK {
                     debug_assert_eq!(first_block_subidx, 0);
                     self.try_alloc_superblock(superblock_idx)
                 } else {
-                    let mask =
-                        SuperblockBitmap::new_mask(first_block_subidx,
-                                                   num_blocks as u32);
+                    let mask = SuperblockBitmap::new_mask(first_block_subidx, num_blocks as u32);
                     self.try_alloc_blocks(superblock_idx, mask)
                 };
 
@@ -593,45 +608,37 @@ impl Allocator {
                     // We managed to allocate this hole
                     Ok(()) => {
                         let first_block_idx =
-                            superblock_idx * BLOCKS_PER_SUPERBLOCK
-                                + (first_block_subidx as usize);
+                            superblock_idx * BLOCKS_PER_SUPERBLOCK + (first_block_subidx as usize);
                         Ok(first_block_idx)
-                    },
+                    }
 
                     // We failed to allocate this hole, but we got an
                     // updated view of the bit pattern for this superblock
-                    Err(observed_bitmap) => {
-                        Err((superblock_idx, observed_bitmap))
-                    }
+                    Err(observed_bitmap) => Err((superblock_idx, observed_bitmap)),
                 }
-            },
+            }
 
             // Blocks span more than one superblock, need a transaction
-            Hole::MultipleSuperblocks { body_start_idx,
-                                        mut num_head_blocks } => {
+            Hole::MultipleSuperblocks {
+                body_start_idx,
+                mut num_head_blocks,
+            } => {
                 // Given the number of head blocks, we can find all other
                 // parameters of the active transaction.
                 let other_blocks = num_blocks - num_head_blocks as usize;
-                let num_body_superblocks =
-                    other_blocks / BLOCKS_PER_SUPERBLOCK;
-                let mut num_tail_blocks =
-                    (other_blocks % BLOCKS_PER_SUPERBLOCK) as u32;
+                let num_body_superblocks = other_blocks / BLOCKS_PER_SUPERBLOCK;
+                let mut num_tail_blocks = (other_blocks % BLOCKS_PER_SUPERBLOCK) as u32;
 
                 // Try to allocate the body of the transaction
                 let mut transaction =
-                    AllocTransaction::with_body(self,
-                                                body_start_idx,
-                                                num_body_superblocks)?;
+                    AllocTransaction::with_body(self, body_start_idx, num_body_superblocks)?;
 
                 // Try to allocate the head of the hole (if any)
                 while num_head_blocks > 0 {
-                    if let Err(observed_head_blocks) =
-                        transaction.try_alloc_head(num_head_blocks)
-                    {
+                    if let Err(observed_head_blocks) = transaction.try_alloc_head(num_head_blocks) {
                         // On head allocation failure, try to "move the hole
                         // forward", pushing more blocks to the tail.
-                        num_tail_blocks +=
-                            num_head_blocks - observed_head_blocks;
+                        num_tail_blocks += num_head_blocks - observed_head_blocks;
                         num_head_blocks = observed_head_blocks;
                     }
                 }
@@ -640,11 +647,8 @@ impl Allocator {
                 // This can happen as a result of moving the hole forward:
                 //     |0011|1111|1110|0000| -> |0000|1111|1111|1000|
                 if num_tail_blocks >= BLOCKS_PER_SUPERBLOCK as u32 {
-                    if let Err(observed_bitmap) =
-                        transaction.try_extend_body()
-                    {
-                        return Err((transaction.body_end_idx(),
-                                    observed_bitmap));
+                    if let Err(observed_bitmap) = transaction.try_extend_body() {
+                        return Err((transaction.body_end_idx(), observed_bitmap));
                     } else {
                         num_tail_blocks -= BLOCKS_PER_SUPERBLOCK as u32;
                     }
@@ -652,21 +656,21 @@ impl Allocator {
 
                 // Try to allocate the tail of the hole (if any)
                 if num_tail_blocks > 0 {
-                    if let Err(observed_bitmap) =
-                        transaction.try_alloc_tail(num_tail_blocks)
-                    {
-                        return Err((transaction.body_end_idx(),
-                                    observed_bitmap));
+                    if let Err(observed_bitmap) = transaction.try_alloc_tail(num_tail_blocks) {
+                        return Err((transaction.body_end_idx(), observed_bitmap));
                     }
                 }
 
                 // We managed to allocate everything! Isn't that right?
-                debug_assert_eq!(transaction.num_blocks(), num_blocks,
-                                 "Allocated an incorrect number of blocks");
+                debug_assert_eq!(
+                    transaction.num_blocks(),
+                    num_blocks,
+                    "Allocated an incorrect number of blocks"
+                );
 
                 // Commit the transaction and get the first block index
                 Ok(transaction.commit())
-            },
+            }
         }
     }
 
@@ -676,8 +680,10 @@ impl Allocator {
     /// `Release` memory barrier in order to avoid deallocation being reordered
     /// before usage of the memory block by the compiler or CPU.
     pub(crate) fn dealloc_superblock(&self, superblock_idx: usize) {
-        debug_assert!(superblock_idx < self.usage_bitmap.len(),
-                      "Superblock index is out of bitmap range");
+        debug_assert!(
+            superblock_idx < self.usage_bitmap.len(),
+            "Superblock index is out of bitmap range"
+        );
         self.usage_bitmap[superblock_idx].dealloc_all(Ordering::Relaxed);
     }
 
@@ -686,11 +692,11 @@ impl Allocator {
     /// This operation has `Relaxed` memory ordering and must be preceded by a
     /// `Release` memory barrier in order to avoid deallocation being reordered
     /// before usage of the memory block by the compiler or CPU.
-    pub(crate) fn dealloc_blocks(&self,
-                                 superblock_idx: usize,
-                                 mask: SuperblockBitmap) {
-        debug_assert!(superblock_idx < self.usage_bitmap.len(),
-                      "Superblock index is out of bitmap range");
+    pub(crate) fn dealloc_blocks(&self, superblock_idx: usize, mask: SuperblockBitmap) {
+        debug_assert!(
+            superblock_idx < self.usage_bitmap.len(),
+            "Superblock index is out of bitmap range"
+        );
         self.usage_bitmap[superblock_idx].dealloc_mask(mask, Ordering::Relaxed);
     }
 }
@@ -715,19 +721,26 @@ impl Drop for Allocator {
         let backing_store_ptr = self.backing_store_start.cast::<u8>().as_ptr();
         if self.locked {
             let usage_bitmap_ptr = self.usage_bitmap.as_mut_ptr() as *mut u8;
-            let bitmap_size =
-                self.usage_bitmap.len() * mem::size_of::<SuperblockBitmap>();
+            let bitmap_size = self.usage_bitmap.len() * mem::size_of::<SuperblockBitmap>();
             unsafe {
                 region::unlock(backing_store_ptr, self.capacity())
-                    .map_err(|err| if cfg!(debug_assertions) {
-                        eprintln!("WARNING: Failed to unlock backing store \
-                                            memory with error {:?}", err);
+                    .map_err(|err| {
+                        if cfg!(debug_assertions) {
+                            eprintln!(
+                                "WARNING: Failed to unlock backing store memory with error {:?}",
+                                err
+                            );
+                        }
                     })
                     .ok();
                 region::unlock(usage_bitmap_ptr, bitmap_size)
-                    .map_err(|err| if cfg!(debug_assertions) {
-                        eprintln!("WARNING: Failed to unlock usage bitmap
-                                            memory with error {:?}", err)
+                    .map_err(|err| {
+                        if cfg!(debug_assertions) {
+                            eprintln!(
+                                "WARNING: Failed to unlock usage bitmap memory with error {:?}",
+                                err
+                            )
+                        }
                     })
                     .ok();
             }
@@ -737,10 +750,11 @@ impl Drop for Allocator {
         // - An allocator is always created with a backing store allocation
         // - Only Drop, which happens at most once, can liberate that allocation
         // - The layout matches that used in `Allocator::new_unchecked()`
-        let backing_store_layout =
-            Layout::from_size_align(self.capacity(), self.alignment)
-                   .expect("All Layout preconditions were checked by builder");
-        unsafe { alloc::dealloc(backing_store_ptr, backing_store_layout); }
+        let backing_store_layout = Layout::from_size_align(self.capacity(), self.alignment)
+            .expect("All Layout preconditions were checked by builder");
+        unsafe {
+            alloc::dealloc(backing_store_ptr, backing_store_layout);
+        }
     }
 }
 
@@ -765,7 +779,6 @@ impl Drop for Allocator {
 //       with the fact that it's only suitable for specific use cases (due to
 //       limited capacity, and possibly no overalignment ability)
 
-
 /// Small utility to divide two integers, rounding the result up
 fn div_round_up(x: usize, y: usize) -> usize {
     // Check interface preconditions in debug builds
@@ -774,7 +787,6 @@ fn div_round_up(x: usize, y: usize) -> usize {
     // Return rounded division result
     (x / y) + (x % y != 0) as usize
 }
-
 
 #[cfg(test)]
 mod tests {

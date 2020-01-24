@@ -2,7 +2,6 @@
 
 use crate::{Allocator, BLOCKS_PER_SUPERBLOCK};
 
-
 /// Builder for a bitmap allocator
 //
 // NOTE: The main purpose of this builder is to ensure that a certain number of
@@ -51,8 +50,10 @@ impl Builder {
     /// by default if left unspecified.
     pub fn alignment(mut self, align: usize) -> Self {
         assert!(align.is_power_of_two(), "Alignment must be a power of 2");
-        assert!(self.block_align.replace(align).is_none(),
-                "Alignment must only be set once");
+        assert!(
+            self.block_align.replace(align).is_none(),
+            "Alignment must only be set once"
+        );
         self
     }
 
@@ -66,10 +67,14 @@ impl Builder {
     ///
     /// You must set either the block size or the superblock size, but not both.
     pub fn block_size(mut self, block_size: usize) -> Self {
-        assert!(block_size.is_power_of_two(),
-                "Block size must be a power of 2");
-        assert!(self.block_size.replace(block_size).is_none(),
-                "Block size must only be set once");
+        assert!(
+            block_size.is_power_of_two(),
+            "Block size must be a power of 2"
+        );
+        assert!(
+            self.block_size.replace(block_size).is_none(),
+            "Block size must only be set once"
+        );
         self
     }
 
@@ -84,9 +89,12 @@ impl Builder {
     ///
     /// You must set either the block size or the superblock size, but not both.
     pub fn superblock_size(self, superblock_size: usize) -> Self {
-        assert_eq!(superblock_size % BLOCKS_PER_SUPERBLOCK, 0,
-                   "Superblock size must be a multiple of \
-                    Allocator::BLOCKS_PER_SUPERBLOCK");
+        assert_eq!(
+            superblock_size % BLOCKS_PER_SUPERBLOCK,
+            0,
+            "Superblock size must be a multiple of \
+             Allocator::BLOCKS_PER_SUPERBLOCK"
+        );
         let block_size = superblock_size / BLOCKS_PER_SUPERBLOCK;
         self.block_size(block_size)
     }
@@ -109,10 +117,14 @@ impl Builder {
     /// forbidden to have pointer offsets that overflow `isize`.
     pub fn capacity(mut self, capacity: usize) -> Self {
         assert!(capacity != 0, "Backing store capacity must not be zero");
-        assert!(capacity <= (std::isize::MAX as usize),
-                "Backing store capacity cannot overflow isize::MAX");
-        assert!(self.capacity.replace(capacity).is_none(),
-                "Backing store capacity must only be set once");
+        assert!(
+            capacity <= (std::isize::MAX as usize),
+            "Backing store capacity cannot overflow isize::MAX"
+        );
+        assert!(
+            self.capacity.replace(capacity).is_none(),
+            "Backing store capacity must only be set once"
+        );
         self
     }
 
@@ -125,20 +137,25 @@ impl Builder {
         let block_align = self.block_align.unwrap_or(1);
 
         // Check requested block size
-        let block_size = self.block_size
-                             .expect("You must specify a block size");
-        assert_eq!(block_size % block_align, 0,
-                   "Block size must be a multiple of alignment");
+        let block_size = self.block_size.expect("You must specify a block size");
+        assert_eq!(
+            block_size % block_align,
+            0,
+            "Block size must be a multiple of alignment"
+        );
 
         // Round requested capacity to next multiple of superblock size
-        let mut capacity =
-            self.capacity.expect("You must specify a backing store capacity");
+        let mut capacity = self
+            .capacity
+            .expect("You must specify a backing store capacity");
         let superblock_size = block_size * BLOCKS_PER_SUPERBLOCK;
         let extra_bytes = capacity % superblock_size;
         if extra_bytes != 0 {
             capacity += superblock_size - extra_bytes;
-            assert!(capacity <= (std::isize::MAX as usize),
-                    "Excessive backing store capacity requested");
+            assert!(
+                capacity <= (std::isize::MAX as usize),
+                "Excessive backing store capacity requested"
+            );
         }
 
         // Build the allocator, this is safe because we have checked all the
@@ -146,7 +163,6 @@ impl Builder {
         unsafe { Allocator::new_unchecked(block_align, block_size, capacity) }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -359,20 +375,25 @@ mod tests {
     #[test]
     #[should_panic]
     fn block_and_superblock_sizes() {
-        Builder::new().block_size(1).superblock_size(2 * BLOCKS_PER_SUPERBLOCK);
+        Builder::new()
+            .block_size(1)
+            .superblock_size(2 * BLOCKS_PER_SUPERBLOCK);
     }
 
     #[test]
     #[should_panic]
     fn multiple_superblock_sizes() {
-        Builder::new().superblock_size(BLOCKS_PER_SUPERBLOCK)
-                      .superblock_size(2 * BLOCKS_PER_SUPERBLOCK);
+        Builder::new()
+            .superblock_size(BLOCKS_PER_SUPERBLOCK)
+            .superblock_size(2 * BLOCKS_PER_SUPERBLOCK);
     }
 
     #[test]
     #[should_panic]
     fn build_superblock_size_only() {
-        Builder::new().superblock_size(BLOCKS_PER_SUPERBLOCK).build();
+        Builder::new()
+            .superblock_size(BLOCKS_PER_SUPERBLOCK)
+            .build();
     }
 
     #[test]
@@ -453,8 +474,9 @@ mod tests {
         assert_eq!(allocator.capacity(), BLOCKS_PER_SUPERBLOCK);
         assert_eq!(allocator.block_alignment(), 1);
 
-        let builder = Builder::new().superblock_size(BLOCKS_PER_SUPERBLOCK)
-                                    .capacity(BLOCKS_PER_SUPERBLOCK);
+        let builder = Builder::new()
+            .superblock_size(BLOCKS_PER_SUPERBLOCK)
+            .capacity(BLOCKS_PER_SUPERBLOCK);
         assert_eq!(builder.block_align, None);
         assert_eq!(builder.block_size, Some(1));
         assert_eq!(builder.capacity, Some(BLOCKS_PER_SUPERBLOCK));
@@ -472,8 +494,9 @@ mod tests {
         assert_eq!(allocator.capacity(), 2 * BLOCKS_PER_SUPERBLOCK);
         assert_eq!(allocator.block_alignment(), 1);
 
-        let builder = Builder::new().block_size(1)
-                                    .capacity(BLOCKS_PER_SUPERBLOCK + 1);
+        let builder = Builder::new()
+            .block_size(1)
+            .capacity(BLOCKS_PER_SUPERBLOCK + 1);
         assert_eq!(builder.block_align, None);
         assert_eq!(builder.block_size, Some(1));
         assert_eq!(builder.capacity, Some(BLOCKS_PER_SUPERBLOCK + 1));
@@ -482,8 +505,9 @@ mod tests {
         assert_eq!(allocator.capacity(), 2 * BLOCKS_PER_SUPERBLOCK);
         assert_eq!(allocator.block_alignment(), 1);
 
-        let builder = Builder::new().block_size(4)
-                                    .capacity(8 * BLOCKS_PER_SUPERBLOCK + 1);
+        let builder = Builder::new()
+            .block_size(4)
+            .capacity(8 * BLOCKS_PER_SUPERBLOCK + 1);
         assert_eq!(builder.block_align, None);
         assert_eq!(builder.block_size, Some(4));
         assert_eq!(builder.capacity, Some(8 * BLOCKS_PER_SUPERBLOCK + 1));
@@ -497,7 +521,10 @@ mod tests {
     #[should_panic]
     fn capacity_overflow() {
         // Capacity will go above std::isize::MAX due to block rounding
-        Builder::new().block_size(2).capacity(std::isize::MAX as usize).build();
+        Builder::new()
+            .block_size(2)
+            .capacity(std::isize::MAX as usize)
+            .build();
     }
 
     #[test]
@@ -565,9 +592,10 @@ mod tests {
         assert_eq!(allocator.capacity(), 8 * BLOCKS_PER_SUPERBLOCK);
         assert_eq!(allocator.block_alignment(), 8);
 
-        let builder = Builder::new().alignment(2)
-                                    .block_size(8)
-                                    .capacity(24 * BLOCKS_PER_SUPERBLOCK);
+        let builder = Builder::new()
+            .alignment(2)
+            .block_size(8)
+            .capacity(24 * BLOCKS_PER_SUPERBLOCK);
         assert_eq!(builder.block_align, Some(2));
         assert_eq!(builder.block_size, Some(8));
         assert_eq!(builder.capacity, Some(24 * BLOCKS_PER_SUPERBLOCK));
@@ -580,6 +608,10 @@ mod tests {
     #[test]
     #[should_panic]
     fn incompatible_block_size_alignment() {
-        Builder::new().alignment(2).block_size(1).capacity(1).build();
+        Builder::new()
+            .alignment(2)
+            .block_size(1)
+            .capacity(1)
+            .build();
     }
 }

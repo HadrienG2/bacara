@@ -9,11 +9,9 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-
 /// Bit fiddling is done in u32 space, so we cast our own copy of
 /// BLOCKS_PER_SUPERBLOCK to u32. It's a bit count, so it should easily fit.
 const BLOCKS_PER_SUPERBLOCK: u32 = crate::BLOCKS_PER_SUPERBLOCK as u32;
-
 
 /// Block allocation pattern within a superblock
 ///
@@ -35,10 +33,14 @@ impl SuperblockBitmap {
     /// be 1 (allocated) and the number of bits that should be 1.
     pub fn new_mask(start: u32, len: u32) -> Self {
         // Check interface preconditions in debug builds
-        debug_assert!(start < BLOCKS_PER_SUPERBLOCK,
-                      "Allocation start is out of superblock range");
-        debug_assert!(len <= (BLOCKS_PER_SUPERBLOCK - start),
-                      "Allocation end is out of superblock range");
+        debug_assert!(
+            start < BLOCKS_PER_SUPERBLOCK,
+            "Allocation start is out of superblock range"
+        );
+        debug_assert!(
+            len <= (BLOCKS_PER_SUPERBLOCK - start),
+            "Allocation end is out of superblock range"
+        );
 
         // Handle the "full superblock" edge case without overflowing
         if len == BLOCKS_PER_SUPERBLOCK {
@@ -53,8 +55,10 @@ impl SuperblockBitmap {
     /// at the end of the superblock
     pub fn new_head_mask(len: u32) -> Self {
         // Check interface preconditions in debug builds
-        debug_assert!(len <= BLOCKS_PER_SUPERBLOCK,
-                      "Requested head mask length is unfeasible");
+        debug_assert!(
+            len <= BLOCKS_PER_SUPERBLOCK,
+            "Requested head mask length is unfeasible"
+        );
 
         // Modulo needed to avoid going out-of-bounds for len == 0
         const BBS: u32 = BLOCKS_PER_SUPERBLOCK;
@@ -104,16 +108,13 @@ impl SuperblockBitmap {
     //
     // TODO: Reconsider accepting usize num_blocks, since search will always
     //       fail anyhow.
-    pub fn search_free_blocks(
-        self,
-        start_idx: u32,
-        num_blocks: usize
-    ) -> Result<u32, u32> {
+    pub fn search_free_blocks(self, start_idx: u32, num_blocks: usize) -> Result<u32, u32> {
         // Check interface preconditions in debug builds
-        debug_assert!(start_idx < BLOCKS_PER_SUPERBLOCK,
-                      "Search start index is out of superblock range");
-        debug_assert_ne!(num_blocks, 0,
-                         "Searching for zero blocks makes no sense");
+        debug_assert!(
+            start_idx < BLOCKS_PER_SUPERBLOCK,
+            "Search start index is out of superblock range"
+        );
+        debug_assert_ne!(num_blocks, 0, "Searching for zero blocks makes no sense");
 
         // Look for holes at increasing indices, from start_idx onwards
         let mut block_idx = start_idx;
@@ -141,8 +142,7 @@ impl SuperblockBitmap {
             remaining_blocks -= free_blocks;
 
             // ...and the sequence of allocated blocks that follows it
-            let allocated_blocks =
-                (!bits).trailing_zeros().min(remaining_blocks);
+            let allocated_blocks = (!bits).trailing_zeros().min(remaining_blocks);
             bits = bits.rotate_right(allocated_blocks);
             block_idx += allocated_blocks;
         }
@@ -153,9 +153,12 @@ impl std::fmt::Debug for SuperblockBitmap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Little-endian binary printout is used to display block occupation
         // status in bitmap iteration order
-        write!(f, "SuperblockBitmap({:0width$b})",
-               self.0.reverse_bits(),
-               width = BLOCKS_PER_SUPERBLOCK as usize)
+        write!(
+            f,
+            "SuperblockBitmap({:0width$b})",
+            self.0.reverse_bits(),
+            width = BLOCKS_PER_SUPERBLOCK as usize
+        )
     }
 }
 
@@ -207,7 +210,6 @@ impl Sub for SuperblockBitmap {
     }
 }
 
-
 /// Atomic variant of SuperblockBitmap
 ///
 /// This is a wrapper of the corresponding AtomicUint type that provides
@@ -226,9 +228,7 @@ impl AtomicSuperblockBitmap {
     /// Get a mutable reference to the underlying bitmap
     pub fn get_mut(&mut self) -> &mut SuperblockBitmap {
         // This is safe because SuperblockBitmap is repr(transparent)
-        unsafe {
-            &mut *(self.0.get_mut() as *mut usize).cast::<SuperblockBitmap>()
-        }
+        unsafe { &mut *(self.0.get_mut() as *mut usize).cast::<SuperblockBitmap>() }
     }
 
     /// Load a value from the atomic bitmap
@@ -242,9 +242,7 @@ impl AtomicSuperblockBitmap {
     }
 
     /// Store a value into the atomic bitmap, returning the previous value
-    fn swap(&self,
-                val: SuperblockBitmap,
-                order: Ordering) -> SuperblockBitmap {
+    fn swap(&self, val: SuperblockBitmap, order: Ordering) -> SuperblockBitmap {
         SuperblockBitmap(self.0.swap(val.0, order))
     }
 
@@ -255,11 +253,12 @@ impl AtomicSuperblockBitmap {
         current: SuperblockBitmap,
         new: SuperblockBitmap,
         success: Ordering,
-        failure: Ordering
+        failure: Ordering,
     ) -> Result<SuperblockBitmap, SuperblockBitmap> {
-        self.0.compare_exchange(current.0, new.0, success, failure)
-              .map(SuperblockBitmap)
-              .map_err(SuperblockBitmap)
+        self.0
+            .compare_exchange(current.0, new.0, success, failure)
+            .map(SuperblockBitmap)
+            .map_err(SuperblockBitmap)
     }
 
     /// Variant of compare_exchange that's more efficient when used in a loop on
@@ -269,18 +268,17 @@ impl AtomicSuperblockBitmap {
         current: SuperblockBitmap,
         new: SuperblockBitmap,
         success: Ordering,
-        failure: Ordering
+        failure: Ordering,
     ) -> Result<SuperblockBitmap, SuperblockBitmap> {
-        self.0.compare_exchange_weak(current.0, new.0, success, failure)
-              .map(SuperblockBitmap)
-              .map_err(SuperblockBitmap)
+        self.0
+            .compare_exchange_weak(current.0, new.0, success, failure)
+            .map(SuperblockBitmap)
+            .map_err(SuperblockBitmap)
     }
 
     /// Atomically clear bits which are set in "val" in the atomic bitmap (aka
     /// relative set complement) and return the previous value.
-    fn fetch_sub(&self,
-                 val: SuperblockBitmap,
-                 order: Ordering) -> SuperblockBitmap {
+    fn fetch_sub(&self, val: SuperblockBitmap, order: Ordering) -> SuperblockBitmap {
         SuperblockBitmap(self.0.fetch_and(!val.0, order))
     }
 
@@ -288,32 +286,44 @@ impl AtomicSuperblockBitmap {
     ///
     /// On failure, return the former bitmap value so that one can check which
     /// blocks were already allocated.
-    pub fn try_alloc_all(&self,
-                         success: Ordering,
-                         failure: Ordering) -> Result<(), SuperblockBitmap> {
-        self.compare_exchange(SuperblockBitmap::EMPTY,
-                              SuperblockBitmap::FULL,
-                              success,
-                              failure)
-            .map(std::mem::drop)
+    pub fn try_alloc_all(
+        &self,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<(), SuperblockBitmap> {
+        self.compare_exchange(
+            SuperblockBitmap::EMPTY,
+            SuperblockBitmap::FULL,
+            success,
+            failure,
+        )
+        .map(std::mem::drop)
     }
 
     /// Try to allocate a subset of a superblock, designated by a mask.
     ///
     /// On failure, return the former bitmap value so that one can check which
     /// blocks were already allocated.
-    pub fn try_alloc_mask(&self,
-                          mask: SuperblockBitmap,
-                          success: Ordering,
-                          failure: Ordering) -> Result<(), SuperblockBitmap> {
+    pub fn try_alloc_mask(
+        &self,
+        mask: SuperblockBitmap,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<(), SuperblockBitmap> {
         // Check for suspicious requests in debug builds
-        debug_assert!(mask.is_mask(),
-                      "Attempted to allocate non-contiguous blocks");
-        debug_assert!(!mask.is_empty(),
-                      "Useless call to try_alloc_mask with empty mask");
-        debug_assert!(!mask.is_full(),
-                      "Inefficient call to try_alloc_mask with full mask, \
-                       you should be using try_alloc_all instead");
+        debug_assert!(
+            mask.is_mask(),
+            "Attempted to allocate non-contiguous blocks"
+        );
+        debug_assert!(
+            !mask.is_empty(),
+            "Useless call to try_alloc_mask with empty mask"
+        );
+        debug_assert!(
+            !mask.is_full(),
+            "Inefficient call to try_alloc_mask with full mask, \
+             you should be using try_alloc_all instead"
+        );
 
         // Observe the initial value of the bitmap
         let mut current = self.load(Ordering::Relaxed);
@@ -321,10 +331,7 @@ impl AtomicSuperblockBitmap {
         // Are the required blocks free as of the latest observation?
         while (current & mask).is_empty() {
             // If so, try to allocate the blocks
-            match self.compare_exchange_weak(current,
-                                             current + mask,
-                                             success,
-                                             failure) {
+            match self.compare_exchange_weak(current, current + mask, success, failure) {
                 // If allocation succeeded, we're done
                 Ok(_) => return Ok(()),
 
@@ -358,21 +365,30 @@ impl AtomicSuperblockBitmap {
     /// Deallocate a subset of a superblock, designated by a mask
     pub fn dealloc_mask(&self, mask: SuperblockBitmap, order: Ordering) {
         // Check for suspicious requests in debug builds
-        debug_assert!(mask.is_mask(),
-                      "Attempted to deallocate non-contiguous blocks");
-        debug_assert!(!mask.is_empty(),
-                      "Useless call to dealloc_mask with empty mask");
-        debug_assert!(!mask.is_full(),
-                      "Inefficient call to dealloc_mask with full mask, \
-                       you should be using dealloc_all instead");
+        debug_assert!(
+            mask.is_mask(),
+            "Attempted to deallocate non-contiguous blocks"
+        );
+        debug_assert!(
+            !mask.is_empty(),
+            "Useless call to dealloc_mask with empty mask"
+        );
+        debug_assert!(
+            !mask.is_full(),
+            "Inefficient call to dealloc_mask with full mask, \
+             you should be using dealloc_all instead"
+        );
 
         // Clear the requested allocation bits
         let old_bitmap = self.fetch_sub(mask, order);
 
         // In debug builds, make sure that all requested bits were indeed marked
         // as allocated beforehand.
-        debug_assert_eq!(old_bitmap & mask, mask,
-                         "Tried to deallocate blocks which weren't allocated");
+        debug_assert_eq!(
+            old_bitmap & mask,
+            mask,
+            "Tried to deallocate blocks which weren't allocated"
+        );
     }
 }
 
@@ -381,7 +397,6 @@ impl From<SuperblockBitmap> for AtomicSuperblockBitmap {
         Self::new(x)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -405,11 +420,15 @@ mod tests {
         for start_idx in 0..BLOCKS_PER_SUPERBLOCK {
             let max_len = BLOCKS_PER_SUPERBLOCK - start_idx;
             for len in 1..=max_len {
-                assert_eq!(EMPTY.search_free_blocks(start_idx, len as usize),
-                           Ok(start_idx));
+                assert_eq!(
+                    EMPTY.search_free_blocks(start_idx, len as usize),
+                    Ok(start_idx)
+                );
             }
-            assert_eq!(EMPTY.search_free_blocks(start_idx, (max_len + 1) as usize),
-                       Err(max_len));
+            assert_eq!(
+                EMPTY.search_free_blocks(start_idx, (max_len + 1) as usize),
+                Err(max_len)
+            );
         }
 
         // Other ways to create empty superblocks
@@ -441,10 +460,8 @@ mod tests {
 
         // Other ways to create full superblocks
         assert_eq!(SuperblockBitmap::new_mask(0, BLOCKS_PER_SUPERBLOCK), FULL);
-        assert_eq!(SuperblockBitmap::new_head_mask(BLOCKS_PER_SUPERBLOCK),
-                   FULL);
-        assert_eq!(SuperblockBitmap::new_tail_mask(BLOCKS_PER_SUPERBLOCK),
-                   FULL);
+        assert_eq!(SuperblockBitmap::new_head_mask(BLOCKS_PER_SUPERBLOCK), FULL);
+        assert_eq!(SuperblockBitmap::new_tail_mask(BLOCKS_PER_SUPERBLOCK), FULL);
     }
 
     #[test]
@@ -459,26 +476,32 @@ mod tests {
             assert!(head.is_mask());
 
             // Free space before/after
-            assert_eq!(head.free_blocks_at_start(),
-                       BLOCKS_PER_SUPERBLOCK - head_len);
+            assert_eq!(
+                head.free_blocks_at_start(),
+                BLOCKS_PER_SUPERBLOCK - head_len
+            );
             assert_eq!(head.free_blocks_at_end(), 0);
 
             // Hole search
             for start_idx in 0..BLOCKS_PER_SUPERBLOCK {
-                let max_len = (BLOCKS_PER_SUPERBLOCK - start_idx)
-                                  .saturating_sub(head_len);
+                let max_len = (BLOCKS_PER_SUPERBLOCK - start_idx).saturating_sub(head_len);
                 for len in 1..=max_len {
-                    assert_eq!(head.search_free_blocks(start_idx, len as usize),
-                               Ok(start_idx));
+                    assert_eq!(
+                        head.search_free_blocks(start_idx, len as usize),
+                        Ok(start_idx)
+                    );
                 }
-                assert_eq!(head.search_free_blocks(start_idx, (max_len+1) as usize),
-                           Err(0));
+                assert_eq!(
+                    head.search_free_blocks(start_idx, (max_len + 1) as usize),
+                    Err(0)
+                );
             }
 
             // Other way to create this head mask
-            assert_eq!(head,
-                       SuperblockBitmap::new_mask(head.free_blocks_at_start(),
-                                                  head_len));
+            assert_eq!(
+                head,
+                SuperblockBitmap::new_mask(head.free_blocks_at_start(), head_len)
+            );
         }
     }
 
@@ -495,18 +518,21 @@ mod tests {
 
             // Free space before/after
             assert_eq!(tail.free_blocks_at_start(), 0);
-            assert_eq!(tail.free_blocks_at_end(),
-                       BLOCKS_PER_SUPERBLOCK - tail_len);
+            assert_eq!(tail.free_blocks_at_end(), BLOCKS_PER_SUPERBLOCK - tail_len);
 
             // Hole search
             for start_idx in 0..BLOCKS_PER_SUPERBLOCK {
                 let max_len = BLOCKS_PER_SUPERBLOCK - start_idx.max(tail_len);
                 for len in 1..=max_len {
-                    assert_eq!(tail.search_free_blocks(start_idx, len as usize),
-                               Ok(start_idx.max(tail_len)));
+                    assert_eq!(
+                        tail.search_free_blocks(start_idx, len as usize),
+                        Ok(start_idx.max(tail_len))
+                    );
                 }
-                assert_eq!(tail.search_free_blocks(start_idx, (max_len+1) as usize),
-                           Err(max_len));
+                assert_eq!(
+                    tail.search_free_blocks(start_idx, (max_len + 1) as usize),
+                    Err(max_len)
+                );
             }
 
             // Other way to create this tail mask
@@ -531,29 +557,34 @@ mod tests {
 
                 // Free space before/after
                 assert_eq!(mask.free_blocks_at_start(), mask_start_idx);
-                assert_eq!(mask.free_blocks_at_end(),
-                           BLOCKS_PER_SUPERBLOCK - mask_end_idx);
+                assert_eq!(
+                    mask.free_blocks_at_end(),
+                    BLOCKS_PER_SUPERBLOCK - mask_end_idx
+                );
 
                 // Hole search
                 for start_idx in 0..BLOCKS_PER_SUPERBLOCK {
-                    let first_hole_len =
-                        mask_start_idx.saturating_sub(start_idx);
-                    let second_hole_start =
-                        (mask_start_idx + mask_len).max(start_idx);
-                    let second_hole_len =
-                        BLOCKS_PER_SUPERBLOCK - second_hole_start;
+                    let first_hole_len = mask_start_idx.saturating_sub(start_idx);
+                    let second_hole_start = (mask_start_idx + mask_len).max(start_idx);
+                    let second_hole_len = BLOCKS_PER_SUPERBLOCK - second_hole_start;
 
                     let max_len = first_hole_len.max(second_hole_len);
                     for len in 1..=first_hole_len {
-                        assert_eq!(mask.search_free_blocks(start_idx, len as usize),
-                                   Ok(start_idx));
+                        assert_eq!(
+                            mask.search_free_blocks(start_idx, len as usize),
+                            Ok(start_idx)
+                        );
                     }
                     for len in (first_hole_len + 1)..max_len {
-                        assert_eq!(mask.search_free_blocks(start_idx, len as usize),
-                                   Ok(second_hole_start));
+                        assert_eq!(
+                            mask.search_free_blocks(start_idx, len as usize),
+                            Ok(second_hole_start)
+                        );
                     }
-                    assert_eq!(mask.search_free_blocks(start_idx, (max_len+1) as usize),
-                               Err(second_hole_len));
+                    assert_eq!(
+                        mask.search_free_blocks(start_idx, (max_len + 1) as usize),
+                        Err(second_hole_len)
+                    );
                 }
             }
         }
@@ -572,10 +603,12 @@ mod tests {
                 // Boolean properties
                 assert_eq!(neg_mask1.is_empty(), mask1.is_full());
                 assert_eq!(neg_mask1.is_full(), mask1.is_empty());
-                assert_eq!(neg_mask1.is_mask(),
-                           mask1.is_empty()
-                            || mask1.free_blocks_at_start() == 0
-                            || mask1.free_blocks_at_end() == 0);
+                assert_eq!(
+                    neg_mask1.is_mask(),
+                    mask1.is_empty()
+                        || mask1.free_blocks_at_start() == 0
+                        || mask1.free_blocks_at_end() == 0
+                );
 
                 // Free space before/after
                 assert_eq!(
@@ -595,8 +628,7 @@ mod tests {
                 for mask2_start in 0..BLOCKS_PER_SUPERBLOCK {
                     let max_mask2_len = BLOCKS_PER_SUPERBLOCK - mask2_start;
                     for mask2_len in 0..=max_mask2_len {
-                        let mask2 = SuperblockBitmap::new_mask(mask2_start,
-                                                               mask2_len);
+                        let mask2 = SuperblockBitmap::new_mask(mask2_start, mask2_len);
 
                         // Subtraction means "bits set in A but not B" and its
                         // properties are therefore checked by testing the
@@ -605,7 +637,9 @@ mod tests {
 
                         // All other set operations are symmetrical and only
                         // need to be tested for mask2_start >= mask1_start
-                        if mask2_start < mask1_start { continue; }
+                        if mask2_start < mask1_start {
+                            continue;
+                        }
 
                         // Addition is equivalent to bitmap OR
                         assert_eq!(mask1 + mask2, mask1 | mask2);
@@ -613,46 +647,57 @@ mod tests {
                         // Intersection properties
                         let mask1_and_2 = mask1 & mask2;
                         assert_eq!(mask1_and_2, mask2 & mask1);
-                        assert_eq!(mask1_and_2.is_empty(),
-                                   mask1.is_empty() || mask2.is_empty()
-                                   || mask1_end <= mask2_start);
-                        assert_eq!(mask1_and_2.is_full(),
-                                   mask1.is_full() && mask2.is_full());
+                        assert_eq!(
+                            mask1_and_2.is_empty(),
+                            mask1.is_empty() || mask2.is_empty() || mask1_end <= mask2_start
+                        );
+                        assert_eq!(mask1_and_2.is_full(), mask1.is_full() && mask2.is_full());
                         assert!(mask1_and_2.is_mask());
-                        assert_eq!(mask1_and_2.free_blocks_at_start(),
-                                   if mask1_and_2.is_empty() {
-                                       BLOCKS_PER_SUPERBLOCK
-                                   } else {
-                                       mask1.free_blocks_at_start()
-                                            .max(mask2.free_blocks_at_start())
-                                   });
-                        assert_eq!(mask1_and_2.free_blocks_at_end(),
-                                   if mask1_and_2.is_empty() {
-                                       BLOCKS_PER_SUPERBLOCK
-                                   } else {
-                                       mask1.free_blocks_at_end()
-                                            .max(mask2.free_blocks_at_end())
-                                   });
+                        assert_eq!(
+                            mask1_and_2.free_blocks_at_start(),
+                            if mask1_and_2.is_empty() {
+                                BLOCKS_PER_SUPERBLOCK
+                            } else {
+                                mask1
+                                    .free_blocks_at_start()
+                                    .max(mask2.free_blocks_at_start())
+                            }
+                        );
+                        assert_eq!(
+                            mask1_and_2.free_blocks_at_end(),
+                            if mask1_and_2.is_empty() {
+                                BLOCKS_PER_SUPERBLOCK
+                            } else {
+                                mask1.free_blocks_at_end().max(mask2.free_blocks_at_end())
+                            }
+                        );
 
                         // Union properties
                         let mask1_or_2 = mask1 | mask2;
                         assert_eq!(mask1_or_2, mask2 | mask1);
-                        assert_eq!(mask1_or_2.is_empty(),
-                                   mask1.is_empty() && mask2.is_empty());
-                        assert_eq!(mask1_or_2.is_full(),
-                                   mask1.is_full() || mask2.is_full()
-                                   || (mask1_start == 0
-                                          && mask1_end >= mask2_start
-                                          && mask2_len == max_mask2_len));
-                        assert_eq!(mask1_or_2.is_mask(),
-                                   mask1.is_empty() || mask2.is_empty()
-                                   || mask1_end >= mask2_start);
-                        assert_eq!(mask1_or_2.free_blocks_at_start(),
-                                   mask1.free_blocks_at_start()
-                                        .min(mask2.free_blocks_at_start()));
-                        assert_eq!(mask1_or_2.free_blocks_at_end(),
-                                   mask1.free_blocks_at_end()
-                                        .min(mask2.free_blocks_at_end()));
+                        assert_eq!(mask1_or_2.is_empty(), mask1.is_empty() && mask2.is_empty());
+                        assert_eq!(
+                            mask1_or_2.is_full(),
+                            mask1.is_full()
+                                || mask2.is_full()
+                                || (mask1_start == 0
+                                    && mask1_end >= mask2_start
+                                    && mask2_len == max_mask2_len)
+                        );
+                        assert_eq!(
+                            mask1_or_2.is_mask(),
+                            mask1.is_empty() || mask2.is_empty() || mask1_end >= mask2_start
+                        );
+                        assert_eq!(
+                            mask1_or_2.free_blocks_at_start(),
+                            mask1
+                                .free_blocks_at_start()
+                                .min(mask2.free_blocks_at_start())
+                        );
+                        assert_eq!(
+                            mask1_or_2.free_blocks_at_end(),
+                            mask1.free_blocks_at_end().min(mask2.free_blocks_at_end())
+                        );
                     }
                 }
             }
@@ -665,8 +710,7 @@ mod tests {
         for orig_mask_start in 0..BLOCKS_PER_SUPERBLOCK {
             let max_orig_mask_len = BLOCKS_PER_SUPERBLOCK - orig_mask_start;
             for orig_mask_len in orig_mask_start..=max_orig_mask_len {
-                let orig_mask = SuperblockBitmap::new_mask(orig_mask_start,
-                                                           orig_mask_len);
+                let orig_mask = SuperblockBitmap::new_mask(orig_mask_start, orig_mask_len);
 
                 // Make an atomic version and check get_mut and load
                 let mut atomic_mask = AtomicSuperblockBitmap::new(orig_mask);
@@ -680,8 +724,7 @@ mod tests {
 
                 // Try to allocate and deallocate everything
                 let alloc_all_result =
-                    atomic_mask.try_alloc_all(Ordering::Relaxed,
-                                              Ordering::Relaxed);
+                    atomic_mask.try_alloc_all(Ordering::Relaxed, Ordering::Relaxed);
                 if orig_mask.is_empty() {
                     assert_eq!(alloc_all_result, Ok(()));
                     assert_eq!(*atomic_mask.get_mut(), SuperblockBitmap::FULL);
@@ -694,24 +737,21 @@ mod tests {
 
                 // Enumerate every sensible (non-empty/non-full) allocation mask
                 for alloc_mask_start in 0..BLOCKS_PER_SUPERBLOCK {
-                    let max_alloc_mask_len = BLOCKS_PER_SUPERBLOCK
-                                                 - alloc_mask_start.max(1);
+                    let max_alloc_mask_len = BLOCKS_PER_SUPERBLOCK - alloc_mask_start.max(1);
                     for alloc_mask_len in 1..=max_alloc_mask_len {
                         let alloc_mask =
-                            SuperblockBitmap::new_mask(alloc_mask_start,
-                                                       alloc_mask_len);
+                            SuperblockBitmap::new_mask(alloc_mask_start, alloc_mask_len);
 
                         // Try to allocate with that mask
-                        let alloc_mask_result =
-                            atomic_mask.try_alloc_mask(alloc_mask,
-                                                       Ordering::Relaxed,
-                                                       Ordering::Relaxed);
+                        let alloc_mask_result = atomic_mask.try_alloc_mask(
+                            alloc_mask,
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        );
                         if (orig_mask & alloc_mask).is_empty() {
                             assert_eq!(alloc_mask_result, Ok(()));
-                            assert_eq!(*atomic_mask.get_mut(),
-                                       orig_mask + alloc_mask);
-                            atomic_mask.dealloc_mask(alloc_mask,
-                                                     Ordering::Relaxed);
+                            assert_eq!(*atomic_mask.get_mut(), orig_mask + alloc_mask);
+                            atomic_mask.dealloc_mask(alloc_mask, Ordering::Relaxed);
                             assert_eq!(*atomic_mask.get_mut(), orig_mask);
                         } else {
                             assert_eq!(alloc_mask_result, Err(orig_mask));
@@ -740,8 +780,7 @@ mod tests {
         const ITERS_PER_MASK: usize = 20_000;
 
         // Set up what we need
-        let atomic_bitmap =
-            Arc::new(AtomicSuperblockBitmap::new(SuperblockBitmap::EMPTY));
+        let atomic_bitmap = Arc::new(AtomicSuperblockBitmap::new(SuperblockBitmap::EMPTY));
         let mut rng = thread_rng();
 
         // For a certain amount of masks
@@ -762,35 +801,30 @@ mod tests {
                         match atomic_bitmap_1.try_alloc_mask(
                             mask,
                             Ordering::Relaxed,
-                            Ordering::Relaxed
+                            Ordering::Relaxed,
                         ) {
-                            Ok(()) =>
-                                atomic_bitmap_1.dealloc_mask(mask,
-                                                             Ordering::Relaxed),
-                            Err(bad_mask) =>
-                                assert_eq!(bad_mask, SuperblockBitmap::FULL),
+                            Ok(()) => atomic_bitmap_1.dealloc_mask(mask, Ordering::Relaxed),
+                            Err(bad_mask) => assert_eq!(bad_mask, SuperblockBitmap::FULL),
                         }
                     }
                 },
                 move || {
                     for _ in 0..ITERS_PER_MASK {
-                        match atomic_bitmap_2.try_alloc_all(Ordering::Relaxed,
-                                                            Ordering::Relaxed) {
-                            Ok(()) =>
-                                atomic_bitmap_2.dealloc_all(Ordering::Relaxed),
-                            Err(bad_mask) =>
-                                assert_eq!(bad_mask, mask),
+                        match atomic_bitmap_2.try_alloc_all(Ordering::Relaxed, Ordering::Relaxed) {
+                            Ok(()) => atomic_bitmap_2.dealloc_all(Ordering::Relaxed),
+                            Err(bad_mask) => assert_eq!(bad_mask, mask),
                         }
                     }
                 },
             );
 
             // Everything that has been allocated should now be deallocated
-            assert_eq!(atomic_bitmap.load(Ordering::Relaxed),
-                       SuperblockBitmap::EMPTY);
+            assert_eq!(
+                atomic_bitmap.load(Ordering::Relaxed),
+                SuperblockBitmap::EMPTY
+            );
         }
     }
-
 
     #[test]
     #[ignore]
@@ -803,12 +837,10 @@ mod tests {
         const ITERS_PER_MASK: usize = 10_000;
 
         // Set up what we need
-        let atomic_bitmap =
-            Arc::new(AtomicSuperblockBitmap::new(SuperblockBitmap::EMPTY));
+        let atomic_bitmap = Arc::new(AtomicSuperblockBitmap::new(SuperblockBitmap::EMPTY));
         let mut rng = thread_rng();
         let mut gen_mask = || {
-            let mask_start_idx =
-                rng.gen_range(0, BLOCKS_PER_SUPERBLOCK);
+            let mask_start_idx = rng.gen_range(0, BLOCKS_PER_SUPERBLOCK);
             let max_mask_len = BLOCKS_PER_SUPERBLOCK - mask_start_idx.max(1);
             let mask_len = rng.gen_range(1, max_mask_len + 1);
             SuperblockBitmap::new_mask(mask_start_idx, mask_len)
@@ -831,11 +863,9 @@ mod tests {
                         match atomic_bitmap_1.try_alloc_mask(
                             mask1,
                             Ordering::Relaxed,
-                            Ordering::Relaxed
+                            Ordering::Relaxed,
                         ) {
-                            Ok(()) =>
-                                atomic_bitmap_1.dealloc_mask(mask1,
-                                                             Ordering::Relaxed),
+                            Ok(()) => atomic_bitmap_1.dealloc_mask(mask1, Ordering::Relaxed),
                             Err(bad_mask) => {
                                 assert!(has_conflict);
                                 assert_eq!(bad_mask, mask2)
@@ -848,11 +878,9 @@ mod tests {
                         match atomic_bitmap_2.try_alloc_mask(
                             mask2,
                             Ordering::Relaxed,
-                            Ordering::Relaxed
+                            Ordering::Relaxed,
                         ) {
-                            Ok(()) =>
-                                atomic_bitmap_2.dealloc_mask(mask2,
-                                                             Ordering::Relaxed),
+                            Ok(()) => atomic_bitmap_2.dealloc_mask(mask2, Ordering::Relaxed),
                             Err(bad_mask) => {
                                 assert!(has_conflict);
                                 assert_eq!(bad_mask, mask1);
@@ -863,8 +891,10 @@ mod tests {
             );
 
             // Everything that has been allocated should now be deallocated
-            assert_eq!(atomic_bitmap.load(Ordering::Relaxed),
-                       SuperblockBitmap::EMPTY);
+            assert_eq!(
+                atomic_bitmap.load(Ordering::Relaxed),
+                SuperblockBitmap::EMPTY
+            );
         }
     }
 }
