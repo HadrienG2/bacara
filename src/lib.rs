@@ -624,14 +624,87 @@ fn div_round_up(x: usize, y: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+    fn div_round_up_() {
+        assert_eq!(div_round_up(0, 1), 0);
+        assert_eq!(div_round_up(1, 1), 1);
+        assert_eq!(div_round_up(2, 1), 2);
+
+        assert_eq!(div_round_up(0, 2), 0);
+        assert_eq!(div_round_up(1, 2), 1);
+        assert_eq!(div_round_up(2, 2), 1);
+        assert_eq!(div_round_up(3, 2), 2);
+        assert_eq!(div_round_up(4, 2), 2);
+
+        assert_eq!(div_round_up(0, 3), 0);
+        assert_eq!(div_round_up(1, 3), 1);
+        assert_eq!(div_round_up(2, 3), 1);
+        assert_eq!(div_round_up(3, 3), 1);
+        assert_eq!(div_round_up(4, 3), 2);
+        assert_eq!(div_round_up(5, 3), 2);
+        assert_eq!(div_round_up(6, 3), 2);
     }
 
-    // TODO: Tests tests test absolutely everything as this code is going to be
-    //       super-extremely tricky
+    #[test]
+    fn builder() {
+        assert_eq!(Allocator::builder(), AllocatorBuilder::new());
+        // NOTE: `AllocatorBuilder` is tested in builder.rs
+    }
+
+    #[test]
+    fn initial_state() {
+        for alignment in [1, 2, 4, 8].iter().copied() {
+            'bs: for block_size in [1, 2, 4, 8, 16, 32, 64, 256, 1024, 4096].iter().copied() {
+                if block_size < alignment { continue 'bs; }
+                let superblock_size = block_size * BLOCKS_PER_SUPERBLOCK;
+                for num_superblocks in [1, 2, 3, 4, 5, 6, 7, 8].iter().copied() {
+                    let capacity = num_superblocks * superblock_size;
+
+                    let mut allocator = unsafe {
+                        Allocator::new_unchecked(alignment, block_size, capacity)
+                    };
+                    assert_eq!(allocator.block_alignment(), alignment);
+                    assert_eq!(allocator.block_size(), block_size);
+                    assert_eq!(allocator.superblock_size(), superblock_size);
+                    assert_eq!(allocator.capacity(), capacity);
+
+                    let start_address = allocator.backing_store_start.as_ptr() as usize;
+                    assert!(start_address >= region::page::size());
+                    assert_eq!(start_address % alignment, 0);
+
+                    assert_eq!(allocator.usage_bitmap.len(), num_superblocks);
+                    assert!(allocator.usage_bitmap.iter_mut()
+                                                  .map(|asb| *asb.get_mut())
+                                                  .all(|sb| sb == SuperblockBitmap::EMPTY));
+
+                    assert_eq!(allocator.block_size_shift, block_size.trailing_zeros() as u8);
+
+                    assert_eq!(allocator.alignment, alignment);
+                }
+            }
+        }
+    }
+
+    // NOTE: No need to test accessores outside of initial_state because
+    //       Allocator methods only allow modifying the usage_bitmap.
+
+    #[test]
+    fn blocks_per_superblock() {
+        assert_eq!(BLOCKS_PER_SUPERBLOCK, Allocator::BLOCKS_PER_SUPERBLOCK);
+    }
+
+    // TODO: Test try_alloc_superblock
+    // TODO: Test try_alloc_mask
+    // TODO: Test dealloc_superblocks
+    // TODO: Test dealloc_mask
+
+    // TODO: Test alloc_unbound
+    // TODO: Test dealloc_unbound
 }
+
+// TODO: Test in a concurrent environment as well, obviously
 
 // TODO: Benchmark at various block sizes and show a graph on README
 //
