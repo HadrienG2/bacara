@@ -136,10 +136,14 @@ pub fn try_alloc_hole(
 pub unsafe fn dealloc_blocks(allocator: &Allocator, start_idx: usize, num_blocks: usize) {
     // Check some preconditions
     let block_capacity = allocator.capacity() / allocator.block_size();
-    debug_assert!(start_idx < block_capacity,
-                  "Start of target block range is out of bounds");
-    debug_assert!(num_blocks < block_capacity - start_idx,
-                  "End of target block range is out of bounds");
+    debug_assert!(
+        start_idx < block_capacity,
+        "Start of target block range is out of bounds"
+    );
+    debug_assert!(
+        num_blocks < block_capacity - start_idx,
+        "End of target block range is out of bounds"
+    );
 
     // Set up some progress accounting
     let mut block_idx = start_idx;
