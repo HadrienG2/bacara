@@ -59,15 +59,15 @@
 //!
 //! FIXME: Oh yes I do need those, but API must be done first ;)
 
+mod allocation;
 mod bitmap;
 mod builder;
-mod holes;
-mod transaction;
+mod hole;
 
 use crate::{
+    allocation::AllocTransaction,
     bitmap::AtomicSuperblockBitmap,
-    holes::{Hole, HoleSearch},
-    transaction::AllocTransaction,
+    hole::{Hole, HoleSearch},
 };
 
 #[cfg(test)]
