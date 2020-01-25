@@ -11,7 +11,7 @@ use crate::{Allocator, SuperblockBitmap, BLOCKS_PER_SUPERBLOCK};
 /// memory allocation must be reverted.
 ///
 /// This struct imposes some structure on the memory allocation process which
-/// allows this transaction rollback process to occur automatically.
+/// allows this rollback process to occur automatically.
 ///
 /// In order to be memory-efficient and allocation-free, it exploits the fact
 /// that all allocations can be decomposed into at most a head, a body and a
@@ -21,7 +21,7 @@ use crate::{Allocator, SuperblockBitmap, BLOCKS_PER_SUPERBLOCK};
 /// `|0011|1111|1111|1111|1000|`
 /// ` head <----body----> tail`
 ///
-pub struct AllocTransaction<'allocator> {
+pub struct AllocGuard<'allocator> {
     /// Number of blocks allocated at the end of the "head" superblock, located
     /// right before the body superblock sequence.
     num_head_blocks: u32,
@@ -40,18 +40,18 @@ pub struct AllocTransaction<'allocator> {
     allocator: &'allocator Allocator,
 }
 
-impl<'allocator> AllocTransaction<'allocator> {
-    /// Start an allocation transaction by trying to allocate a range of
-    /// contiguous "body" superblocks (which can be empty for head/tail pairs).
+impl<'allocator> AllocGuard<'allocator> {
+    /// Start an allocation by trying to allocate a range of contiguous "body"
+    /// superblocks (which can be empty for head/tail pairs).
     ///
     /// If your block sequence fits in a single superblock, you don't need to
-    /// use AllocTransaction, just call `Allocator::try_alloc_blocks()`.
+    /// use AllocGuard, just call `Allocator::try_alloc_blocks()`.
     ///
     /// If the body allocation succeeds, this function returns the resulting
-    /// transaction object. If it fails, the function returns the index of the
+    /// allocation object. If it fails, the function returns the index of the
     /// first superblock that was already allocated (and thus that led the
-    /// allocation transaction to fail) and the bit pattern that was observed
-    /// on this superblock.
+    /// allocation to fail) and the bit pattern that was observed on this
+    /// superblock.
     pub fn with_body(
         allocator: &'allocator Allocator,
         body_start_idx: usize,
@@ -68,10 +68,10 @@ impl<'allocator> AllocTransaction<'allocator> {
             "Requested body ends after end of allocator backing store"
         );
 
-        // Create the transaction object right away, initially with an empty
+        // Create the allocation object right away, initially with an empty
         // body, so that it can track our progress and cancel the body
         // allocation automatically if a problem occurs.
-        let mut transaction = Self {
+        let mut allocation = Self {
             num_head_blocks: 0,
             body_start_idx,
             num_body_superblocks: 0,
@@ -84,18 +84,18 @@ impl<'allocator> AllocTransaction<'allocator> {
         for superblock_idx in body_start_idx..body_end_idx {
             // Try to allocate the current superblock. If that fails, return the
             // index of the superblock that caused the failure. Any previous
-            // allocation will be rolled back because "transaction" is dropped.
+            // allocation will be rolled back because "allocation" is dropped.
             allocator
                 .try_alloc_superblock(superblock_idx)
                 .map_err(|actual_bitmap| (superblock_idx, actual_bitmap))?;
 
-            // Update the transaction after every allocation
-            transaction.num_body_superblocks += 1;
+            // Update the allocation object after every allocation
+            allocation.num_body_superblocks += 1;
         }
 
-        // The body allocation transaction was successful, return the
-        // transaction object to allow head/tail allocation
-        Ok(transaction)
+        // The body allocation  was successful, return the allocation object to
+        // allow head/tail allocation
+        Ok(allocation)
     }
 
     /// Try to allocate N "head" blocks, falling before the body superblocks.
@@ -103,7 +103,7 @@ impl<'allocator> AllocTransaction<'allocator> {
     /// On failure, will return how many head blocks are actually available
     /// before the first body superblock.
     pub fn try_alloc_head(&mut self, num_blocks: u32) -> Result<(), u32> {
-        // Check transaction object consistency
+        // Check allocation object consistency
         self.debug_check_invariants();
 
         // Check that there's room for a head allocation
@@ -128,7 +128,7 @@ impl<'allocator> AllocTransaction<'allocator> {
             )
             .map_err(|actual_bitmap| actual_bitmap.free_blocks_at_end())?;
 
-        // On success, add the head blocks to the transaction
+        // On success, add the head blocks to the allocation
         self.num_head_blocks = num_blocks;
         Ok(())
     }
@@ -144,7 +144,7 @@ impl<'allocator> AllocTransaction<'allocator> {
     /// On failure, will return the bit pattern that was actually observed on
     /// that superblock.
     pub fn try_extend_body(&mut self) -> Result<(), SuperblockBitmap> {
-        // Check transaction object consistency
+        // Check allocation object consistency
         self.debug_check_invariants();
 
         // Check that there's room for an extra superblock
@@ -157,7 +157,7 @@ impl<'allocator> AllocTransaction<'allocator> {
         // Try to allocate, and on failure return actual bit pattern
         self.allocator.try_alloc_superblock(self.body_end_idx())?;
 
-        // On success, add the extra body superblock to the transaction
+        // On success, add the extra body superblock to the allocation
         self.num_body_superblocks += 1;
         Ok(())
     }
@@ -167,7 +167,7 @@ impl<'allocator> AllocTransaction<'allocator> {
     /// On failure, will return the bit pattern that was actually observed on
     /// the last body superblock.
     pub fn try_alloc_tail(&mut self, num_blocks: u32) -> Result<(), SuperblockBitmap> {
-        // Check transaction object consistency
+        // Check allocation object consistency
         self.debug_check_invariants();
 
         // Check that there's room for a tail allocation
@@ -191,12 +191,12 @@ impl<'allocator> AllocTransaction<'allocator> {
             SuperblockBitmap::new_tail_mask(num_blocks),
         )?;
 
-        // On success, add the tail blocks to the transaction
+        // On success, add the tail blocks to the allocation
         self.num_tail_blocks = num_blocks;
         Ok(())
     }
 
-    /// Number of blocks which were allocated as part of this transaction
+    /// Number of blocks which were allocated as part of this allocation
     pub fn num_blocks(&self) -> usize {
         // Check invariants
         self.debug_check_invariants();
@@ -207,7 +207,7 @@ impl<'allocator> AllocTransaction<'allocator> {
             + (self.num_tail_blocks as usize)
     }
 
-    /// Accept the transaction, return the index of the first allocated _block_
+    /// Accept the allocation, return the index of the first allocated _block_
     pub fn commit(self) -> usize {
         // Check invariants
         self.debug_check_invariants();
@@ -216,16 +216,16 @@ impl<'allocator> AllocTransaction<'allocator> {
         let first_block_idx =
             self.body_start_idx * BLOCKS_PER_SUPERBLOCK - (self.num_head_blocks as usize);
 
-        // Forget the transaction object so that transaction is not canceled
+        // Forget the allocation object so that allocation is not canceled
         std::mem::forget(self);
 
         // Return the index of the first allocated block
         first_block_idx
     }
 
-    /// Debug-mode check that the transaction object upholds its invariants
+    /// Debug-mode check that the allocation object upholds its invariants
     fn debug_check_invariants(&self) {
-        // If the transaction has head blocks...
+        // If the allocation has head blocks...
         if self.num_head_blocks != 0 {
             debug_assert_ne!(
                 self.body_start_idx, 0,
@@ -249,7 +249,7 @@ impl<'allocator> AllocTransaction<'allocator> {
             "Body ends after end of allocator backing store"
         );
 
-        // If the transaction has tail blocks...
+        // If the allocation has tail blocks...
         if self.num_tail_blocks != 0 {
             // All tail blocks must verify some properties
             let body_end_idx = self.body_start_idx + self.num_body_superblocks;
@@ -267,7 +267,7 @@ impl<'allocator> AllocTransaction<'allocator> {
     }
 }
 
-impl Drop for AllocTransaction<'_> {
+impl Drop for AllocGuard<'_> {
     fn drop(&mut self) {
         // Check invariants in debug build
         self.debug_check_invariants();

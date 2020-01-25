@@ -65,7 +65,7 @@ mod builder;
 mod hole;
 
 use crate::{
-    allocation::AllocTransaction,
+    allocation::AllocGuard,
     bitmap::AtomicSuperblockBitmap,
     hole::{Hole, HoleSearch},
 };
@@ -569,7 +569,7 @@ impl Allocator {
     ) -> Result<usize, (usize, SuperblockBitmap)> {
         // TODO: Add some debug_asserts in there
         match hole {
-            // All blocks are in a single superblock, no transaction needed
+            // All blocks are in a single superblock, no guard needed
             Hole::SingleSuperblock {
                 superblock_idx,
                 first_block_subidx,
@@ -598,24 +598,24 @@ impl Allocator {
                 }
             }
 
-            // Blocks span more than one superblock, need a transaction
+            // Blocks span more than one superblock, need an AllocGuard
             Hole::MultipleSuperblocks {
                 body_start_idx,
                 mut num_head_blocks,
             } => {
                 // Given the number of head blocks, we can find all other
-                // parameters of the active transaction.
+                // parameters of the active allocation.
                 let other_blocks = num_blocks - num_head_blocks as usize;
                 let num_body_superblocks = other_blocks / BLOCKS_PER_SUPERBLOCK;
                 let mut num_tail_blocks = (other_blocks % BLOCKS_PER_SUPERBLOCK) as u32;
 
-                // Try to allocate the body of the transaction
-                let mut transaction =
-                    AllocTransaction::with_body(self, body_start_idx, num_body_superblocks)?;
+                // Try to allocate the body of the allocation
+                let mut allocation =
+                    AllocGuard::with_body(self, body_start_idx, num_body_superblocks)?;
 
                 // Try to allocate the head of the hole (if any)
                 while num_head_blocks > 0 {
-                    if let Err(observed_head_blocks) = transaction.try_alloc_head(num_head_blocks) {
+                    if let Err(observed_head_blocks) = allocation.try_alloc_head(num_head_blocks) {
                         // On head allocation failure, try to "move the hole
                         // forward", pushing more blocks to the tail.
                         num_tail_blocks += num_head_blocks - observed_head_blocks;
@@ -627,8 +627,8 @@ impl Allocator {
                 // This can happen as a result of moving the hole forward:
                 //     |0011|1111|1110|0000| -> |0000|1111|1111|1000|
                 if num_tail_blocks >= BLOCKS_PER_SUPERBLOCK as u32 {
-                    if let Err(observed_bitmap) = transaction.try_extend_body() {
-                        return Err((transaction.body_end_idx(), observed_bitmap));
+                    if let Err(observed_bitmap) = allocation.try_extend_body() {
+                        return Err((allocation.body_end_idx(), observed_bitmap));
                     } else {
                         num_tail_blocks -= BLOCKS_PER_SUPERBLOCK as u32;
                     }
@@ -636,20 +636,20 @@ impl Allocator {
 
                 // Try to allocate the tail of the hole (if any)
                 if num_tail_blocks > 0 {
-                    if let Err(observed_bitmap) = transaction.try_alloc_tail(num_tail_blocks) {
-                        return Err((transaction.body_end_idx(), observed_bitmap));
+                    if let Err(observed_bitmap) = allocation.try_alloc_tail(num_tail_blocks) {
+                        return Err((allocation.body_end_idx(), observed_bitmap));
                     }
                 }
 
                 // We managed to allocate everything! Isn't that right?
                 debug_assert_eq!(
-                    transaction.num_blocks(),
+                    allocation.num_blocks(),
                     num_blocks,
                     "Allocated an incorrect number of blocks"
                 );
 
-                // Commit the transaction and get the first block index
-                Ok(transaction.commit())
+                // Commit the allocation and get the first block index
+                Ok(allocation.commit())
             }
         }
     }

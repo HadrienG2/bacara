@@ -5,8 +5,8 @@ use crate::{SuperblockBitmap, BLOCKS_PER_SUPERBLOCK};
 /// Location of a free memory "hole" within the allocation bitmap
 ///
 /// The hole can be bigger than requested, so the memory allocation code is
-/// encouraged to try translating its hole forward when allocation fails instead
-/// of rolling back the full memory allocation transaction right away.
+/// encouraged to try moving its hole forward when allocation fails instead of
+/// rolling back the full allocation right away.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Hole {
     /// Hole that fits within a single superblock
