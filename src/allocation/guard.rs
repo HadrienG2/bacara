@@ -3,8 +3,7 @@
 
 use crate::{Allocator, SuperblockBitmap, BLOCKS_PER_SUPERBLOCK};
 
-
-/// RAII guard to automatically rollback failed allocations
+/// RAII guard for iterative allocation, with automatic rollback on failure
 ///
 /// In this lock-free bitmap allocator, the process of allocating memory which
 /// spans more than one superblock isn't atomic, and may therefore fail _after_
@@ -91,6 +90,7 @@ impl<'allocator> AllocGuard<'allocator> {
                 .map_err(|actual_bitmap| (superblock_idx, actual_bitmap))?;
 
             // Update the allocation object after every allocation
+            debug_assert_eq!(superblock_idx, allocation.body_end_idx());
             allocation.num_body_superblocks += 1;
         }
 
@@ -103,6 +103,8 @@ impl<'allocator> AllocGuard<'allocator> {
     ///
     /// On failure, will return how many head blocks are actually available
     /// before the first body superblock.
+    ///
+    /// Head allocation is optional, and may only be carried out once.
     pub fn try_alloc_head(&mut self, num_blocks: u32) -> Result<(), u32> {
         // Check allocation object consistency
         self.debug_check_invariants();
@@ -123,7 +125,7 @@ impl<'allocator> AllocGuard<'allocator> {
         // Try to allocate, and on failure return how many head blocks are
         // actually available (trailing zeros in the head superblock)
         self.allocator
-            .try_alloc_blocks(
+            .try_alloc_mask(
                 self.body_start_idx - 1,
                 SuperblockBitmap::new_head_mask(num_blocks),
             )
@@ -144,14 +146,24 @@ impl<'allocator> AllocGuard<'allocator> {
     ///
     /// On failure, will return the bit pattern that was actually observed on
     /// that superblock.
+    ///
+    /// Body extension is typically needed after a race with another thread
+    /// forced us to allocate a smaller head than initially expected. It is
+    /// optional, and may only be carried out before tail allocation.
     pub fn try_extend_body(&mut self) -> Result<(), SuperblockBitmap> {
         // Check allocation object consistency
         self.debug_check_invariants();
 
+        // Check that the tail hasn't already been allocated
+        debug_assert_eq!(
+            self.num_tail_blocks, 0,
+            "Body extension must be performed before tail allocation"
+        );
+
         // Check that there's room for an extra superblock
-        let num_body_superblocks = self.allocator.capacity() / self.allocator.superblock_size();
+        let superblock_capacity = self.allocator.capacity() / self.allocator.superblock_size();
         debug_assert!(
-            self.body_end_idx() < num_body_superblocks,
+            self.body_end_idx() < superblock_capacity,
             "No superblock available for body extension"
         );
 
@@ -167,14 +179,16 @@ impl<'allocator> AllocGuard<'allocator> {
     ///
     /// On failure, will return the bit pattern that was actually observed on
     /// the last body superblock.
+    ///
+    /// Tail allocation is optional, and may only be carried out once.
     pub fn try_alloc_tail(&mut self, num_blocks: u32) -> Result<(), SuperblockBitmap> {
         // Check allocation object consistency
         self.debug_check_invariants();
 
         // Check that there's room for a tail allocation
-        let num_body_superblocks = self.allocator.capacity() / self.allocator.superblock_size();
+        let superblock_capacity = self.allocator.capacity() / self.allocator.superblock_size();
         debug_assert!(
-            self.body_end_idx() < num_body_superblocks,
+            self.body_end_idx() < superblock_capacity,
             "No superblock available for tail allocation"
         );
         debug_assert_eq!(
@@ -187,7 +201,7 @@ impl<'allocator> AllocGuard<'allocator> {
 
         // Try to allocate, and on failure return how many tail blocks are
         // actually available (leading zeros in the tail superblock)
-        self.allocator.try_alloc_blocks(
+        self.allocator.try_alloc_mask(
             self.body_end_idx(),
             SuperblockBitmap::new_tail_mask(num_blocks),
         )?;
@@ -253,9 +267,8 @@ impl<'allocator> AllocGuard<'allocator> {
         // If the allocation has tail blocks...
         if self.num_tail_blocks != 0 {
             // All tail blocks must verify some properties
-            let body_end_idx = self.body_start_idx + self.num_body_superblocks;
             debug_assert_ne!(
-                body_end_idx,
+                self.body_end_idx(),
                 superblock_capacity - 1,
                 "Tail superblock has an out-of-bounds index"
             );
@@ -275,24 +288,47 @@ impl Drop for AllocGuard<'_> {
 
         // Deallocate head blocks, if any
         if self.num_head_blocks != 0 {
-            self.allocator.dealloc_blocks(
-                self.body_start_idx - 1,
-                SuperblockBitmap::new_head_mask(self.num_head_blocks),
-            );
+            // This is safe because...
+            // - The only code path that sets num_head_blocks to a nonzero value
+            //   does so after a successful allocation at this superblock index
+            //   and with this mask.
+            // - Head allocation may only occur once and body_start_idx is never
+            //   modified after AllocGuard creation.
+            unsafe {
+                self.allocator.dealloc_mask(
+                    self.body_start_idx - 1,
+                    SuperblockBitmap::new_head_mask(self.num_head_blocks),
+                );
+            }
         }
 
         // Deallocate fully allocated body superblocks
-        let body_end_idx = self.body_start_idx + self.num_body_superblocks;
-        for superblock_idx in self.body_start_idx..body_end_idx {
-            self.allocator.dealloc_superblock(superblock_idx);
+        //
+        // This is safe because...
+        // - `body_start_idx` is never modified after AllocGuard creation.
+        // - `body_end_idx()` is initially at `body_start_idx`, only changes by
+        //   being incremented after successfully allocating a superblock there.
+        unsafe {
+            self.allocator
+                .dealloc_superblocks(self.body_start_idx, self.body_end_idx());
         }
 
         // Deallocate tail blocks, if any
         if self.num_tail_blocks != 0 {
-            self.allocator.dealloc_blocks(
-                body_end_idx,
-                SuperblockBitmap::new_tail_mask(self.num_tail_blocks),
-            );
+            // This is safe because...
+            // - The only code path that sets num_tail_blocks to a nonzero value
+            //   does so after a successful allocation at this superblock index
+            //   and with this mask.
+            // - Tail allocation may only occur once and `body_end_idx()` cannot
+            //   change afterwards, because the only way to change it after
+            //   `AllocGuard` creation is `try_extend_body()`, and that will
+            //   fail after tail allocation.
+            unsafe {
+                self.allocator.dealloc_mask(
+                    self.body_end_idx(),
+                    SuperblockBitmap::new_tail_mask(self.num_tail_blocks),
+                );
+            }
         }
     }
 }

@@ -1,11 +1,9 @@
 /// Multi-superblock memory allocation and deallocation functions
-
 mod guard;
 
 use crate::{Allocator, Hole, SuperblockBitmap, BLOCKS_PER_SUPERBLOCK};
 
 use guard::AllocGuard;
-
 
 /// Try to allocate from a hole of free memory found by HoleSearch
 ///
@@ -26,7 +24,13 @@ pub fn try_alloc_hole(
     hole: Hole,
     num_blocks: usize,
 ) -> Result<usize, (usize, SuperblockBitmap)> {
-    // TODO: Add some debug_asserts in there
+    // Check preconditions
+    debug_assert_ne!(
+        num_blocks, 0,
+        "No need for this primitive in zero_sized allocation"
+    );
+
+    // Check what kind of hole we're dealing with
     match hole {
         // All blocks are in a single superblock, no guard needed
         Hole::SingleSuperblock {
@@ -39,7 +43,7 @@ pub fn try_alloc_hole(
                 allocator.try_alloc_superblock(superblock_idx)
             } else {
                 let mask = SuperblockBitmap::new_mask(first_block_subidx, num_blocks as u32);
-                allocator.try_alloc_blocks(superblock_idx, mask)
+                allocator.try_alloc_mask(superblock_idx, mask)
             };
 
             // Did we succeed?

@@ -15,6 +15,9 @@
 //! memory to an unpredictable degree. As long as you keep use of this allocator
 //! reasonably infrequent, this shouldn't be a problem in practice.
 //!
+//! In the absence of such heavy concurrent interference, worst-case execution
+//! times grow linearly with the allocator's bitmap size (see below).
+//!
 //! # Bitmap allocation primer
 //!
 //! A bitmap allocator is a general-purpose memory allocator: it allows
@@ -64,10 +67,7 @@ mod bitmap;
 mod builder;
 mod hole;
 
-use crate::{
-    bitmap::AtomicSuperblockBitmap,
-    hole::HoleSearch,
-};
+use crate::{bitmap::AtomicSuperblockBitmap, hole::HoleSearch};
 
 #[cfg(test)]
 use require_unsafe_in_body::require_unsafe_in_bodies;
@@ -83,10 +83,7 @@ use std::{
 pub use builder::Builder as AllocatorBuilder;
 
 // Re-export some building blocks for other modules' use
-pub(crate) use crate::{
-    bitmap::SuperblockBitmap,
-    hole::Hole,
-};
+pub(crate) use crate::{bitmap::SuperblockBitmap, hole::Hole};
 
 /// Number of blocks in a superblock
 ///
@@ -478,10 +475,16 @@ impl Allocator {
                 .min(end_block_idx - block_idx) as u32;
 
             // Deallocate leading buffer blocks in this first superblock
-            self.dealloc_blocks(
-                superblock_idx,
-                SuperblockBitmap::new_mask(local_start_idx, local_len),
-            );
+            //
+            // This is safe because if the above computations are correct, those
+            // blocks belong to the allocation targeted by the client-provided
+            // pointer, which our safety contract assumes to be valid.
+            unsafe {
+                self.dealloc_mask(
+                    superblock_idx,
+                    SuperblockBitmap::new_mask(local_start_idx, local_len),
+                )
+            };
 
             // Advance block pointer, stop if all blocks were liberated
             block_idx += local_len as usize;
@@ -493,10 +496,19 @@ impl Allocator {
         // If control reached this point, block_idx is now at the start of a
         // superblock, so we can switch to faster superblock-wise deallocation.
         // Deallocate all superblocks until the one where end_block_idx resides.
+        //
+        // This is safe because if the above computations are correct, those
+        // blocks belong to the allocation targeted by the client-provided
+        // pointer, which our safety contract assumes to be valid.
+        debug_assert_eq!(
+            block_idx % BLOCKS_PER_SUPERBLOCK,
+            0,
+            "Head deallocation did not work as expected"
+        );
         let start_superblock_idx = block_idx / BLOCKS_PER_SUPERBLOCK;
         let end_superblock_idx = end_block_idx / BLOCKS_PER_SUPERBLOCK;
-        for superblock_idx in start_superblock_idx..end_superblock_idx {
-            self.dealloc_superblock(superblock_idx);
+        unsafe {
+            self.dealloc_superblocks(start_superblock_idx, end_superblock_idx);
         }
 
         // Advance block pointer, stop if all blocks were liberated
@@ -506,11 +518,17 @@ impl Allocator {
         }
 
         // Deallocate trailing buffer blocks in the last superblock
+        //
+        // This is safe because if the above computations are correct, those
+        // blocks belong to the allocation targeted by the client-provided
+        // pointer, which our safety contract assumes to be valid.
         let remaining_len = (end_block_idx - block_idx) as u32;
-        self.dealloc_blocks(
-            end_superblock_idx,
-            SuperblockBitmap::new_tail_mask(remaining_len),
-        );
+        unsafe {
+            self.dealloc_mask(
+                end_superblock_idx,
+                SuperblockBitmap::new_tail_mask(remaining_len),
+            );
+        }
     }
 
     /// Try to atomically allocate a full superblock
@@ -531,14 +549,14 @@ impl Allocator {
         self.usage_bitmap[superblock_idx].try_alloc_all(Ordering::Relaxed, Ordering::Relaxed)
     }
 
-    /// Try to atomically allocate a subset of the blocks within a superblock
+    /// Try to atomically allocate a sequence of blocks within a superblock
     ///
     /// Returns observed superblock allocation bitfield on failure.
     ///
     /// This operation has `Relaxed` memory ordering and must be followed by an
     /// `Acquire` memory barrier in order to avoid allocation being reordered
     /// after usage of the memory block by the compiler or CPU.
-    pub(crate) fn try_alloc_blocks(
+    pub(crate) fn try_alloc_mask(
         &self,
         superblock_idx: usize,
         mask: SuperblockBitmap,
@@ -550,25 +568,47 @@ impl Allocator {
         self.usage_bitmap[superblock_idx].try_alloc_mask(mask, Ordering::Relaxed, Ordering::Relaxed)
     }
 
-    /// Atomically deallocate a full superblock
+    /// Atomically deallocate a (right-exclusive) range of superblocks
     ///
     /// This operation has `Relaxed` memory ordering and must be preceded by a
     /// `Release` memory barrier in order to avoid deallocation being reordered
     /// before usage of the memory block by the compiler or CPU.
-    pub(crate) fn dealloc_superblock(&self, superblock_idx: usize) {
+    ///
+    /// # Safety
+    ///
+    /// This function must not be targeted at a superblock which is still in
+    /// use, either partially or entirely, otherwise many forms of undefined
+    /// behavior will occur (&mut aliasing, race conditions, double-free...).
+    pub(crate) unsafe fn dealloc_superblocks(
+        &self,
+        start_superblock_idx: usize,
+        end_superblock_idx: usize,
+    ) {
         debug_assert!(
-            superblock_idx < self.usage_bitmap.len(),
-            "Superblock index is out of bitmap range"
+            start_superblock_idx < self.usage_bitmap.len(),
+            "First superblock index is out of bitmap range"
         );
-        self.usage_bitmap[superblock_idx].dealloc_all(Ordering::Relaxed);
+        debug_assert!(
+            end_superblock_idx <= self.usage_bitmap.len(),
+            "Last superblock index is out of bitmap range"
+        );
+        for superblock in &self.usage_bitmap[start_superblock_idx..end_superblock_idx] {
+            superblock.dealloc_all(Ordering::Relaxed);
+        }
     }
 
-    /// Atomically deallocate a subset of the blocks within a superblock
+    /// Atomically deallocate a sequence of blocks within a superblock
     ///
     /// This operation has `Relaxed` memory ordering and must be preceded by a
     /// `Release` memory barrier in order to avoid deallocation being reordered
     /// before usage of the memory block by the compiler or CPU.
-    pub(crate) fn dealloc_blocks(&self, superblock_idx: usize, mask: SuperblockBitmap) {
+    ///
+    /// # Safety
+    ///
+    /// This function must not be targeted at a blocks which are still in
+    /// use, either partially or entirely, otherwise many forms of undefined
+    /// behavior will occur (&mut aliasing, race conditions, double-free...).
+    pub(crate) unsafe fn dealloc_mask(&self, superblock_idx: usize, mask: SuperblockBitmap) {
         debug_assert!(
             superblock_idx < self.usage_bitmap.len(),
             "Superblock index is out of bitmap range"
