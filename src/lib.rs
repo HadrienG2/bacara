@@ -415,7 +415,8 @@ impl Allocator {
     /// further tampering and it should not have already been deallocated.
     ///
     /// `ptr` will be dangling after calling this function, and should neither
-    /// be dereferenced nor passed to `dealloc_unbound` again.
+    /// be dereferenced nor passed to `dealloc_unbound` again. All references to
+    /// the target memory region must have been dropped before calling this API.
     #[cfg_attr(not(test), allow(unused_unsafe))]
     pub unsafe fn dealloc_unbound(&self, ptr: NonNull<[MaybeUninit<u8>]>) {
         // In debug builds, check that the input pointer does come from our
@@ -459,75 +460,15 @@ impl Allocator {
         // reallocating and filling the memory that we are liberating.
         atomic::fence(Ordering::Release);
 
-        // Switch to block coordinates as that's what our bitmap speaks
-        let mut block_idx = ptr_offset / self.block_size();
-        let end_block_idx = block_idx + div_round_up(ptr_len, self.block_size());
-
-        // Does our first block fall in the middle of a superblock?
-        let local_start_idx = (block_idx % BLOCKS_PER_SUPERBLOCK) as u32;
-        if local_start_idx != 0 {
-            // Compute index of that superblock
-            let superblock_idx = block_idx / BLOCKS_PER_SUPERBLOCK;
-
-            // Compute how many blocks are allocated within the superblock,
-            // bearing in mind that the buffer may end there
-            let local_len = (BLOCKS_PER_SUPERBLOCK - local_start_idx as usize)
-                .min(end_block_idx - block_idx) as u32;
-
-            // Deallocate leading buffer blocks in this first superblock
-            //
-            // This is safe because if the above computations are correct, those
-            // blocks belong to the allocation targeted by the client-provided
-            // pointer, which our safety contract assumes to be valid.
-            unsafe {
-                self.dealloc_mask(
-                    superblock_idx,
-                    SuperblockBitmap::new_mask(local_start_idx, local_len),
-                )
-            };
-
-            // Advance block pointer, stop if all blocks were liberated
-            block_idx += local_len as usize;
-            if block_idx == end_block_idx {
-                return;
-            }
-        }
-
-        // If control reached this point, block_idx is now at the start of a
-        // superblock, so we can switch to faster superblock-wise deallocation.
-        // Deallocate all superblocks until the one where end_block_idx resides.
+        // Switch to block coordinates and call the deallocator
         //
-        // This is safe because if the above computations are correct, those
-        // blocks belong to the allocation targeted by the client-provided
-        // pointer, which our safety contract assumes to be valid.
-        debug_assert_eq!(
-            block_idx % BLOCKS_PER_SUPERBLOCK,
-            0,
-            "Head deallocation did not work as expected"
-        );
-        let start_superblock_idx = block_idx / BLOCKS_PER_SUPERBLOCK;
-        let end_superblock_idx = end_block_idx / BLOCKS_PER_SUPERBLOCK;
+        // This is safe if the conversion between pointer+len and block
+        // coordinates is correct, because our safety contract requires that the
+        // input pointer is a good candidate for deallocation.
+        let start_idx = ptr_offset / self.block_size();
+        let num_blocks = div_round_up(ptr_len, self.block_size());
         unsafe {
-            self.dealloc_superblocks(start_superblock_idx, end_superblock_idx);
-        }
-
-        // Advance block pointer, stop if all blocks were liberated
-        block_idx = end_superblock_idx * BLOCKS_PER_SUPERBLOCK;
-        if block_idx == end_block_idx {
-            return;
-        }
-
-        // Deallocate trailing buffer blocks in the last superblock
-        //
-        // This is safe because if the above computations are correct, those
-        // blocks belong to the allocation targeted by the client-provided
-        // pointer, which our safety contract assumes to be valid.
-        let remaining_len = (end_block_idx - block_idx) as u32;
-        unsafe {
-            self.dealloc_mask(
-                end_superblock_idx,
-                SuperblockBitmap::new_tail_mask(remaining_len),
-            );
+            allocation::dealloc_blocks(self, start_idx, num_blocks);
         }
     }
 

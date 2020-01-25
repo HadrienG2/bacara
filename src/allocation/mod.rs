@@ -5,6 +5,9 @@ use crate::{Allocator, Hole, SuperblockBitmap, BLOCKS_PER_SUPERBLOCK};
 
 use guard::AllocGuard;
 
+#[cfg(test)]
+use require_unsafe_in_body::require_unsafe_in_body;
+
 /// Try to allocate from a hole of free memory found by HoleSearch
 ///
 /// This operation is not atomic (other threads may observe the allocation in
@@ -114,6 +117,99 @@ pub fn try_alloc_hole(
             // Commit the allocation and get the first block index
             Ok(allocation.commit())
         }
+    }
+}
+
+/// Deallocate a contiguous range of blocks from the allocator
+///
+/// This operation has `Relaxed` memory ordering and must be preceded by a
+/// `Release` memory barrier in order to avoid deallocation being reordered
+/// before usage of the memory block by the compiler or CPU.
+///
+/// # Safety
+///
+/// This function must not be targeted at a blocks which are still in use,
+/// otherwise many forms of undefined behavior will occur (&mut aliasing, race
+/// conditions, double-free...).
+#[cfg_attr(test, require_unsafe_in_body)]
+#[cfg_attr(not(test), allow(unused_unsafe))]
+pub unsafe fn dealloc_blocks(allocator: &Allocator, start_idx: usize, num_blocks: usize) {
+    // Check some preconditions
+    let block_capacity = allocator.capacity() / allocator.block_size();
+    debug_assert!(start_idx < block_capacity,
+                  "Start of target block range is out of bounds");
+    debug_assert!(num_blocks < block_capacity - start_idx,
+                  "End of target block range is out of bounds");
+
+    // Set up some progress accounting
+    let mut block_idx = start_idx;
+    let end_block_idx = block_idx + num_blocks;
+
+    // Does our first block fall in the middle of a superblock?
+    let local_start_idx = (block_idx % BLOCKS_PER_SUPERBLOCK) as u32;
+    if local_start_idx != 0 {
+        // Compute index of that superblock
+        let superblock_idx = block_idx / BLOCKS_PER_SUPERBLOCK;
+
+        // Compute how many blocks are allocated within the superblock,
+        // bearing in mind that the buffer may end there
+        let local_len = (BLOCKS_PER_SUPERBLOCK - local_start_idx as usize)
+            .min(end_block_idx - block_idx) as u32;
+
+        // Deallocate leading buffer blocks in this first superblock
+        //
+        // This is safe because if the above computations are correct, those
+        // blocks belong to the target block range, which our safety contract
+        // assumes to be safe to deallocate
+        unsafe {
+            allocator.dealloc_mask(
+                superblock_idx,
+                SuperblockBitmap::new_mask(local_start_idx, local_len),
+            )
+        };
+
+        // Advance block pointer, stop if all blocks were liberated
+        block_idx += local_len as usize;
+        if block_idx == end_block_idx {
+            return;
+        }
+    }
+
+    // If control reached this point, block_idx is now at the start of a
+    // superblock, so we can switch to faster superblock-wise deallocation.
+    // Deallocate all superblocks until the one where end_block_idx resides.
+    //
+    // This is safe because if the above computations are correct, those blocks
+    // belong to the target block range, which our safety contract assumes to be
+    // safe to deallocate
+    debug_assert_eq!(
+        block_idx % BLOCKS_PER_SUPERBLOCK,
+        0,
+        "Head deallocation did not work as expected"
+    );
+    let start_superblock_idx = block_idx / BLOCKS_PER_SUPERBLOCK;
+    let end_superblock_idx = end_block_idx / BLOCKS_PER_SUPERBLOCK;
+    unsafe {
+        allocator.dealloc_superblocks(start_superblock_idx, end_superblock_idx);
+    }
+
+    // Advance block pointer, stop if all blocks were liberated
+    block_idx = end_superblock_idx * BLOCKS_PER_SUPERBLOCK;
+    if block_idx == end_block_idx {
+        return;
+    }
+
+    // Deallocate trailing buffer blocks in the last superblock
+    //
+    // This is safe because if the above computations are correct, those blocks
+    // belong to the target block range, which our safety contract assumes to be
+    // safe to deallocate
+    let remaining_len = (end_block_idx - block_idx) as u32;
+    unsafe {
+        allocator.dealloc_mask(
+            end_superblock_idx,
+            SuperblockBitmap::new_tail_mask(remaining_len),
+        );
     }
 }
 
