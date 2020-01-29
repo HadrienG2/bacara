@@ -665,10 +665,10 @@ mod tests {
                     let capacity = num_superblocks * superblock_size;
 
                     let mut allocator = Allocator::builder()
-                                                  .alignment(alignment)
-                                                  .block_size(block_size)
-                                                  .capacity(capacity)
-                                                  .build();
+                        .alignment(alignment)
+                        .block_size(block_size)
+                        .capacity(capacity)
+                        .build();
                     assert_eq!(allocator.block_alignment(), alignment);
                     assert_eq!(allocator.block_size(), block_size);
                     assert_eq!(allocator.superblock_size(), superblock_size);
@@ -708,10 +708,10 @@ mod tests {
     #[test]
     fn superblock_allocs() {
         let allocator = Allocator::builder()
-                                  .alignment(8)
-                                  .block_size(64)
-                                  .capacity(3 * 64 * BLOCKS_PER_SUPERBLOCK)
-                                  .build();
+            .alignment(8)
+            .block_size(64)
+            .capacity(3 * 64 * BLOCKS_PER_SUPERBLOCK)
+            .build();
         for idx in 0..allocator.usage_bitmap.len() {
             assert_eq!(allocator.try_alloc_superblock(idx), Ok(()));
             let check_allocated = |curr_bitmap| {
@@ -733,7 +733,10 @@ mod tests {
             for mask2_start in 0..BLOCKS_PER_SUPERBLOCK {
                 for mask2_len in 1..=(BLOCKS_PER_SUPERBLOCK - mask2_start.max(1)) {
                     let mask2 = SuperblockBitmap::new_mask(mask2_start as u32, mask2_len as u32);
-                    assert_eq!(allocator.try_alloc_mask(idx, mask2), Err(SuperblockBitmap::FULL));
+                    assert_eq!(
+                        allocator.try_alloc_mask(idx, mask2),
+                        Err(SuperblockBitmap::FULL)
+                    );
                     check_allocated(SuperblockBitmap::FULL);
                 }
             }
@@ -747,10 +750,10 @@ mod tests {
     #[test]
     fn mask_allocs() {
         let allocator = Allocator::builder()
-                                  .alignment(8)
-                                  .block_size(64)
-                                  .capacity(3 * 64 * BLOCKS_PER_SUPERBLOCK)
-                                  .build();
+            .alignment(8)
+            .block_size(64)
+            .capacity(3 * 64 * BLOCKS_PER_SUPERBLOCK)
+            .build();
         for idx in 0..allocator.usage_bitmap.len() {
             for mask1_start in 0..BLOCKS_PER_SUPERBLOCK {
                 for mask1_len in 1..=(BLOCKS_PER_SUPERBLOCK - mask1_start.max(1)) {
@@ -771,7 +774,8 @@ mod tests {
                     check_allocated(mask1);
                     for mask2_start in (0..BLOCKS_PER_SUPERBLOCK).step_by(5) {
                         for mask2_len in 1..=(BLOCKS_PER_SUPERBLOCK - mask2_start.max(1)) {
-                            let mask2 = SuperblockBitmap::new_mask(mask2_start as u32, mask2_len as u32);
+                            let mask2 =
+                                SuperblockBitmap::new_mask(mask2_start as u32, mask2_len as u32);
                             let alloc2_res = allocator.try_alloc_mask(idx, mask2);
                             if mask1 & mask2 != SuperblockBitmap::EMPTY {
                                 assert_eq!(alloc2_res, Err(mask1));
