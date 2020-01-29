@@ -697,7 +697,7 @@ mod tests {
         }
     }
 
-    // NOTE: No need to test accessores outside of initial_state because
+    // NOTE: No need to test accessors outside of initial_state because
     //       Allocator methods only allow modifying the usage_bitmap.
 
     #[test]
