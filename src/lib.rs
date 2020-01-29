@@ -664,8 +664,11 @@ mod tests {
                 for num_superblocks in [1, 2, 3, 4, 5, 6, 7, 8].iter().copied() {
                     let capacity = num_superblocks * superblock_size;
 
-                    let mut allocator =
-                        unsafe { Allocator::new_unchecked(alignment, block_size, capacity) };
+                    let mut allocator = Allocator::builder()
+                                                  .alignment(alignment)
+                                                  .block_size(block_size)
+                                                  .capacity(capacity)
+                                                  .build();
                     assert_eq!(allocator.block_alignment(), alignment);
                     assert_eq!(allocator.block_size(), block_size);
                     assert_eq!(allocator.superblock_size(), superblock_size);
@@ -704,7 +707,11 @@ mod tests {
 
     #[test]
     fn superblock_allocs() {
-        let allocator = unsafe { Allocator::new_unchecked(8, 64, 3 * 64 * BLOCKS_PER_SUPERBLOCK) };
+        let allocator = Allocator::builder()
+                                  .alignment(8)
+                                  .block_size(64)
+                                  .capacity(3 * 64 * BLOCKS_PER_SUPERBLOCK)
+                                  .build();
         for idx in 0..allocator.usage_bitmap.len() {
             assert_eq!(allocator.try_alloc_superblock(idx), Ok(()));
             let check_allocated = |curr_bitmap| {
@@ -739,7 +746,11 @@ mod tests {
 
     #[test]
     fn mask_allocs() {
-        let allocator = unsafe { Allocator::new_unchecked(8, 64, 3 * 64 * BLOCKS_PER_SUPERBLOCK) };
+        let allocator = Allocator::builder()
+                                  .alignment(8)
+                                  .block_size(64)
+                                  .capacity(3 * 64 * BLOCKS_PER_SUPERBLOCK)
+                                  .build();
         for idx in 0..allocator.usage_bitmap.len() {
             for mask1_start in 0..BLOCKS_PER_SUPERBLOCK {
                 for mask1_len in 1..=(BLOCKS_PER_SUPERBLOCK - mask1_start.max(1)) {
