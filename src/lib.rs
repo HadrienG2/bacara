@@ -707,33 +707,33 @@ mod tests {
         let allocator = unsafe { Allocator::new_unchecked(8, 64, 3 * 64 * BLOCKS_PER_SUPERBLOCK) };
         for idx in 0..allocator.usage_bitmap.len() {
             assert_eq!(allocator.try_alloc_superblock(idx), Ok(()));
-            let check_allocated = || {
-                assert!(allocator
-                    .usage_bitmap
-                    .iter()
-                    .map(|asb| asb.load(Ordering::Relaxed))
-                    .enumerate()
-                    .all(|(idx2, sb)| if idx2 == idx {
-                        sb == SuperblockBitmap::FULL
+            let check_allocated = |curr_bitmap| {
+                for (idx2, asb) in allocator.usage_bitmap.iter().enumerate() {
+                    let superblock = asb.load(Ordering::Relaxed);
+                    if idx2 == idx {
+                        assert_eq!(superblock, curr_bitmap);
                     } else {
-                        sb == SuperblockBitmap::EMPTY
-                    }));
+                        assert_eq!(superblock, SuperblockBitmap::EMPTY);
+                    }
+                }
             };
-            check_allocated();
+            check_allocated(SuperblockBitmap::FULL);
             assert_eq!(
                 allocator.try_alloc_superblock(idx),
                 Err(SuperblockBitmap::FULL)
             );
-            check_allocated();
-            // TODO: Iterate all possible mask2 too
+            check_allocated(SuperblockBitmap::FULL);
+            for mask2_start in 0..BLOCKS_PER_SUPERBLOCK {
+                for mask2_len in 1..=(BLOCKS_PER_SUPERBLOCK - mask2_start.max(1)) {
+                    let mask2 = SuperblockBitmap::new_mask(mask2_start as u32, mask2_len as u32);
+                    assert_eq!(allocator.try_alloc_mask(idx, mask2), Err(SuperblockBitmap::FULL));
+                    check_allocated(SuperblockBitmap::FULL);
+                }
+            }
             unsafe {
                 allocator.dealloc_superblocks(idx, idx + 1);
             }
-            assert!(allocator
-                .usage_bitmap
-                .iter()
-                .map(|asb| asb.load(Ordering::Relaxed))
-                .all(|sb| sb == SuperblockBitmap::EMPTY));
+            check_allocated(SuperblockBitmap::EMPTY);
         }
     }
 
@@ -745,30 +745,36 @@ mod tests {
                 for mask1_len in 1..=(BLOCKS_PER_SUPERBLOCK - mask1_start.max(1)) {
                     let mask1 = SuperblockBitmap::new_mask(mask1_start as u32, mask1_len as u32);
                     assert_eq!(allocator.try_alloc_mask(idx, mask1), Ok(()));
-                    let check_allocated = || {
-                        assert!(allocator
-                            .usage_bitmap
-                            .iter()
-                            .map(|asb| asb.load(Ordering::Relaxed))
-                            .enumerate()
-                            .all(|(idx2, sb)| if idx2 == idx {
-                                sb == mask1
+                    let check_allocated = |curr_bitmap| {
+                        for (idx2, asb) in allocator.usage_bitmap.iter().enumerate() {
+                            let superblock = asb.load(Ordering::Relaxed);
+                            if idx2 == idx {
+                                assert_eq!(superblock, curr_bitmap);
                             } else {
-                                sb == SuperblockBitmap::EMPTY
-                            }));
+                                assert_eq!(superblock, SuperblockBitmap::EMPTY);
+                            }
+                        }
                     };
-                    check_allocated();
-                    // TODO: Iterate all possible mask2
-                    assert_eq!(allocator.try_alloc_mask(idx, mask1), Err(mask1));
-                    check_allocated();
+                    check_allocated(mask1);
                     assert_eq!(allocator.try_alloc_superblock(idx), Err(mask1));
-                    check_allocated();
+                    check_allocated(mask1);
+                    for mask2_start in (0..BLOCKS_PER_SUPERBLOCK).step_by(5) {
+                        for mask2_len in 1..=(BLOCKS_PER_SUPERBLOCK - mask2_start.max(1)) {
+                            let mask2 = SuperblockBitmap::new_mask(mask2_start as u32, mask2_len as u32);
+                            let alloc2_res = allocator.try_alloc_mask(idx, mask2);
+                            if mask1 & mask2 != SuperblockBitmap::EMPTY {
+                                assert_eq!(alloc2_res, Err(mask1));
+                                check_allocated(mask1);
+                            } else {
+                                assert_eq!(alloc2_res, Ok(()));
+                                check_allocated(mask1 + mask2);
+                                unsafe { allocator.dealloc_mask(idx, mask2) };
+                                check_allocated(mask1);
+                            }
+                        }
+                    }
                     unsafe { allocator.dealloc_mask(idx, mask1) };
-                    assert!(allocator
-                        .usage_bitmap
-                        .iter()
-                        .map(|asb| asb.load(Ordering::Relaxed))
-                        .all(|sb| sb == SuperblockBitmap::EMPTY));
+                    check_allocated(SuperblockBitmap::EMPTY);
                 }
             }
         }
