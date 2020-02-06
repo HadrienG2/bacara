@@ -139,6 +139,10 @@ impl<'allocator> AllocGuard<'allocator> {
     /// Query the index of the superblock after the end of the body, where extra
     /// body superblocks or tail blocks would be allocated.
     pub fn body_end_idx(&self) -> usize {
+        // Check invariants
+        self.debug_check_invariants();
+
+        // Compute index of past-the-end superblock
         self.body_start_idx + self.num_body_superblocks
     }
 
@@ -333,4 +337,30 @@ impl Drop for AllocGuard<'_> {
     }
 }
 
-// TODO: Test this
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TODO: Tester avec 8 superblocs, cf hole.rs pour l'explication
+    // TODO: Vérifier body_end_idx et num_blocks à chaque opération
+    // TODO: Vérifier effet du Drop sur le bitmap à chaque fois
+
+    // TODO: Constructeur with_body avec body de taille nulle
+    // TODO: Constructeur with_body avec body non-nul sur bitmap pas OK
+    // TODO: Constructeur with_body avec body non-nul sur bitmap OK
+    // TODO: commit directement après with_body
+
+    // TODO: try_alloc_head sur bitmap pas OK
+    // TODO: try_alloc_head sur bitmap OK
+    // TODO: commit après with_body + try_alloc_head
+
+    // TODO: try_extend_body sur bitmap pas OK
+    // TODO: try_extend_body sur bitmap OK
+    // TODO: commit après with_body + try_extend_body
+
+    // TODO: try_alloc_tail sur bitmap pas OK
+    // TODO: try_alloc_tail sur bitmap OK
+    // TODO: commit après with_body + try_alloc_tail
+
+    // TODO: Séquence with_body + try_alloc_head + try_extend_body + try_alloc_tail + commit
+}
