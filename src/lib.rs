@@ -224,7 +224,7 @@ impl Allocator {
     /// This is the multiplicative factor between a bitmap allocator's block
     /// size and its superblock size. That quantity is machine-dependent and
     /// subjected to change in future versions of this crate, so please always
-    /// call this function instead of relying on past results from it.
+    /// use this constant instead of relying on past values from it.
     pub const BLOCKS_PER_SUPERBLOCK: usize = BLOCKS_PER_SUPERBLOCK;
 
     /// Block alignment of this allocator (in bytes)
